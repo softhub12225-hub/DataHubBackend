@@ -14,6 +14,14 @@ concurrency:
 permissions:
   contents: read
 
+# Every action is at its current major because GitHub is retiring the Node 20
+# runtime that the previous majors shipped on. The runners already default to Node
+# 24, so a Node 20 action is a warning today and a failing job later.
+#
+# The pinned `version:` on setup-uv is a different axis: that is uv itself, held at
+# the version uv.lock was resolved with, and `uv sync --frozen` is what would catch
+# a disagreement.
+
 env:
   PYTHON_VERSION: "3.12"
 
@@ -78,10 +86,10 @@ jobs:
       SESSION_SECRET: ci_only_preview_signing_key
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           version: "0.5.13"
           enable-cache: true
@@ -135,13 +143,15 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      # Build only -- no registry push and no deployment at this stage.
+      # Build only -- no registry push and no deployment at this stage. buildx warns
+      # that the result stays in the cache, which is the point: this job exists to
+      # prove the image still builds, not to produce one.
       - name: Build api image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/docker/api.Dockerfile
