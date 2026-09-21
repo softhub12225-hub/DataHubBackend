@@ -14,9 +14,26 @@ FROM python:3.12-slim-bookworm AS builder
 # patch version here cannot affect the runtime image's contents.
 COPY --from=ghcr.io/astral-sh/uv:0.5.13 /uv /usr/local/bin/uv
 
+# UV_PROJECT_ENVIRONMENT builds the virtualenv AT ITS FINAL PATH, and that is not
+# a tidiness preference -- it is the difference between an image that runs and one
+# that does not.
+#
+# A virtualenv is not relocatable. Every console script in .venv/bin carries the
+# absolute path of its interpreter in its shebang, so a venv built at /build/.venv
+# and copied to /app/.venv leaves every entry point pointing at
+# /build/.venv/bin/python3, which does not exist in the runtime stage. The symptom
+# is not a missing uvicorn, it is a missing interpreter, reported as:
+#
+#   exec container process (missing dynamic library?)
+#   `/app/.venv/bin/uvicorn`: No such file or directory
+#
+# Nothing in CI caught this: the docker job BUILDS the image and never runs it, and
+# the Compose stack had never been executed either. The first thing to actually
+# start a container from this file was a deployment.
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /build
@@ -77,7 +94,9 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder --chown=app:app /build/.venv /app/.venv
+# Same path on both sides. See UV_PROJECT_ENVIRONMENT in the builder stage: the
+# shebangs inside are absolute, so this must be a copy, never a move.
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app apps/api/ /app/apps/api/
 COPY --chown=app:app pyproject.toml /app/pyproject.toml
 

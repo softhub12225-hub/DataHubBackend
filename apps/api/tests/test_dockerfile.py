@@ -90,3 +90,47 @@ def test_every_cache_mount_names_an_id(name: str) -> None:
         "instead: the manifests-first COPY order already caches the dependency layer "
         "on every build that does not change dependencies."
     )
+
+
+#: `COPY --from=<stage> <src> <dest>`, capturing the two paths.
+STAGE_COPY = re.compile(r"COPY\s+--from=\S+(?:\s+--\S+)*\s+(?P<src>\S+)\s+(?P<dest>\S+)")
+
+
+@pytest.mark.parametrize("name", DOCKERFILES)
+def test_the_virtualenv_is_copied_to_the_path_it_was_built_at(name: str) -> None:
+    """A virtualenv is not relocatable, and nothing else in the pipeline notices.
+
+    Every console script in `.venv/bin` carries its interpreter's absolute path in
+    its shebang. Build the venv at /build/.venv, copy it to /app/.venv, and every
+    entry point points at /build/.venv/bin/python3 -- which does not exist in the
+    runtime stage. The container then dies with a message that blames the wrong
+    file:
+
+        exec container process (missing dynamic library?)
+        `/app/.venv/bin/uvicorn`: No such file or directory
+
+    This shipped. The image built green in CI for months because the docker job
+    builds images and never starts one, and the Compose stack had never been run
+    either -- the first thing to start a container from this file was a production
+    deployment.
+
+    So the invariant is asserted statically: if a stage-to-stage COPY moves a
+    virtualenv, source and destination must be the same absolute path.
+    """
+    text = (REPO_ROOT / name).read_text(encoding="utf-8")
+    venv_copies = [
+        (match.group("src"), match.group("dest"))
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+        for match in STAGE_COPY.finditer(line)
+        if ".venv" in match.group("src")
+    ]
+    assert venv_copies, f"{name} copies no virtualenv -- has the build changed?"
+
+    for src, dest in venv_copies:
+        assert src == dest, (
+            f"{name} copies the virtualenv from {src} to {dest}. A venv is not "
+            f"relocatable: its scripts hardcode the interpreter path in their "
+            f"shebangs, so the container will fail to exec. Build it at the final "
+            f"path instead -- set UV_PROJECT_ENVIRONMENT={dest} in the builder stage."
+        )
