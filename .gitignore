@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Secrets -- never commit
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# NOT ignored, on purpose:
+#   uv.lock                          -- reproducible installs
+#   .reports/step-5c5/               -- see below
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Locally derived data -- regenerable, and large
+# ---------------------------------------------------------------------------
+# Stored evidence and normalised document artifacts from a real pilot run, and the
+# reviewer manifests generated from them. All three are reproduced by a documented
+# command (`make extract-documents`, `make claims-run`, `make verify-manifest`) and
+# none of them is a source of truth, so committing them would only add churn.
+.evidence-*/
+.artifacts-*/
+
+# `.reports/*` rather than `.reports/`: git does not descend into an ignored
+# DIRECTORY, so a negation underneath one can never match. Ignoring the contents
+# instead leaves the directory traversable, which is what makes the exception below
+# work at all. Both patterns are `**/`-prefixed because the reports live under
+# apps/api, and a pattern with an interior slash is anchored to this file's directory.
+**/.reports/*
+
+# ...with ONE exception. `verification/domain_binding.py` and `verification/console.py`
+# hard-code the sha256 of these three manifests, and every responsibility decision and
+# promotion is refused unless the bytes on disk hash to the approved value. That makes
+# them an INPUT the code is pinned to, not derived output: a deployment without them
+# cannot verify anything, and the console's manifest panel reports them missing. The
+# ignore rule above is about size and churn, and 1.3MB of approved review packages is
+# neither.
+!**/.reports/step-5c5/
