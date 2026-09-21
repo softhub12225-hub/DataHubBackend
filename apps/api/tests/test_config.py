@@ -60,6 +60,88 @@ def test_async_and_sync_dsns_use_the_right_drivers() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+
+
+def _target(**overrides: Any) -> DatabaseSettings:
+    fields: dict[str, Any] = {
+        "host": "ep-example.aws.neon.tech",
+        "port": 5432,
+        "db": "neondb",
+        "migration_user": "owner",
+        "migration_password": SecretStr("owner-pw"),
+    }
+    fields.update(overrides)
+    return DatabaseSettings(**fields)
+
+
+def test_each_driver_gets_the_tls_parameter_it_actually_understands() -> None:
+    """One setting, two spellings -- and the difference is not cosmetic.
+
+    SQLAlchemy passes an unrecognised query parameter straight through to the driver,
+    so a DSN carrying `sslmode` reaches asyncpg's `connect()` as an unexpected keyword
+    argument. The result is a TypeError on the first connection, in the deployed
+    environment, from configuration that read correctly. psycopg wants libpq's
+    `sslmode`; asyncpg wants `ssl`.
+    """
+    db = _target(sslmode="require")
+    assert "sslmode=require" in db.sync_dsn(DatabaseRole.MIGRATION)
+    assert "ssl=require" in db.async_dsn(DatabaseRole.API)
+    # Neither DSN may carry the other driver's spelling.
+    assert "ssl=require" not in db.sync_dsn(DatabaseRole.MIGRATION).replace("sslmode=require", "")
+    assert "sslmode" not in db.async_dsn(DatabaseRole.API)
+
+
+def test_tls_is_unset_by_default_and_the_dsn_says_nothing() -> None:
+    """Silence, not a default.
+
+    Defaulting to `require` would make the local Compose stack fail on a loopback
+    connection, and it would fail in a way that reads as a credential problem. Every
+    managed provider needs it set; a container on a private network does not.
+    """
+    db = _target()
+    assert db.sslmode is None
+    assert "ssl" not in db.async_dsn(DatabaseRole.API)
+    assert "sslmode" not in db.sync_dsn(DatabaseRole.MIGRATION)
+
+
+def test_every_libpq_mode_is_accepted() -> None:
+    for mode in ("disable", "allow", "prefer", "require", "verify-ca", "verify-full"):
+        assert _target(sslmode=mode).sslmode == mode
+
+
+def test_a_mistyped_mode_is_refused_at_startup_not_at_connect_time() -> None:
+    """The typo must fail next to the typo.
+
+    An unvalidated value travels into the DSN and surfaces as a driver error on the
+    first query, which is a long way from the environment variable that caused it.
+    """
+    with pytest.raises(ValidationError) as raised:
+        _target(sslmode="requre")
+    assert "not a libpq TLS mode" in str(raised.value)
+
+
+def test_an_empty_value_means_unset_rather_than_invalid() -> None:
+    """Compose and Kubernetes can blank an inherited variable but cannot remove it."""
+    assert _target(sslmode="").sslmode is None
+    assert _target(sslmode="   ").sslmode is None
+
+
+def test_the_mode_is_normalised_so_one_spelling_reaches_the_driver() -> None:
+    assert _target(sslmode="REQUIRE").sslmode == "require"
+    assert "ssl=require" in _target(sslmode=" Require ").async_dsn(DatabaseRole.API)
+
+
+def test_tls_applies_to_every_role_not_just_the_api() -> None:
+    """A worker or the publisher connecting without TLS would be refused too."""
+    db = _target(sslmode="require")
+    for role in (DatabaseRole.API, DatabaseRole.WORKER, DatabaseRole.PUBLISHER):
+        assert "ssl=require" in db.async_dsn(role)
+    assert "sslmode=require" in db.sync_dsn(DatabaseRole.MIGRATION)
+
+
+# ---------------------------------------------------------------------------
 # Database identity separation
 # ---------------------------------------------------------------------------
 

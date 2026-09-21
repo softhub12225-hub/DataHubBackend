@@ -17,6 +17,7 @@ from pydantic import (
     PostgresDsn,
     RedisDsn,
     SecretStr,
+    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,6 +64,23 @@ class DatabaseRole(StrEnum):
     """The publication transaction. The only identity granted canonical writes."""
 
 
+#: The libpq TLS vocabulary, which is the one operators already know and the one
+#: every managed provider documents.
+SSL_MODES: frozenset[str] = frozenset(
+    {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+)
+
+#: How each driver spells the same setting. They disagree, and the disagreement is a
+#: trap rather than a detail: psycopg takes libpq's ``sslmode``, asyncpg takes ``ssl``,
+#: and SQLAlchemy passes an unrecognised query parameter STRAIGHT THROUGH to the
+#: driver. So a DSN carrying ``sslmode`` reaches asyncpg's ``connect()`` as an
+#: unexpected keyword argument -- a TypeError at connection time, in the deployed
+#: environment, from configuration that looked right.
+SSL_QUERY_PARAMETER: dict[str, str] = {
+    "postgresql+psycopg": "sslmode",
+    "postgresql+asyncpg": "ssl",
+}
+
 #: Identities that must never be the schema owner. Enforced in every environment.
 NON_OWNER_ROLES: tuple[DatabaseRole, ...] = (
     DatabaseRole.API,
@@ -85,6 +103,17 @@ class DatabaseSettings(BaseSettings):
     host: str = "localhost"
     port: int = 5432
     db: str = "datahub"
+
+    #: TLS for every database connection. ``None`` means "say nothing", which leaves
+    #: each driver on its own default -- psycopg negotiates opportunistically, asyncpg
+    #: does not attempt TLS at all.
+    #:
+    #: Unset is right for a local container on a loopback interface and wrong for
+    #: every managed provider: Neon, Supabase and RDS all require TLS, and asyncpg
+    #: without this setting is refused by the server. It is not defaulted to
+    #: ``require`` because that would make the local stack fail for a reason that
+    #: reads as a credential problem.
+    sslmode: str | None = None
 
     # One credential pair per role. Usernames default to the role names created by
     # infra/postgres/init/10-runtime-roles.sh; passwords default to an obvious
@@ -109,6 +138,24 @@ class DatabaseSettings(BaseSettings):
     pool_timeout_seconds: float = Field(default=10.0, gt=0)
     pool_recycle_seconds: int = Field(default=1800, gt=0)
     statement_timeout_ms: int = Field(default=15_000, gt=0)
+
+    @field_validator("sslmode", mode="after")
+    @classmethod
+    def _sslmode_must_be_libpq_vocabulary(cls, value: str | None) -> str | None:
+        """Reject a mode no driver understands, at startup.
+
+        An unknown value would otherwise travel into the DSN and surface as a driver
+        TypeError on the first connection, which is a long way from the typo.
+        """
+        if value is None or not value.strip():
+            return None
+        mode = value.strip().lower()
+        if mode not in SSL_MODES:
+            raise ValueError(
+                f"POSTGRES_SSLMODE={value!r} is not a libpq TLS mode; "
+                f"expected one of {sorted(SSL_MODES)}"
+            )
+        return mode
 
     @model_validator(mode="after")
     def _blank_migration_credentials_mean_absent(self) -> Self:
@@ -151,6 +198,14 @@ class DatabaseSettings(BaseSettings):
 
     def _dsn(self, role: DatabaseRole, driver: str) -> str:
         user, password = self.credentials(role)
+        # The parameter name is chosen by driver, not shared: see SSL_QUERY_PARAMETER.
+        # An unknown driver contributes no TLS parameter rather than guessing one,
+        # because a guess would be passed to `connect()` verbatim.
+        query = None
+        if self.sslmode is not None:
+            parameter = SSL_QUERY_PARAMETER.get(driver)
+            if parameter is not None:
+                query = f"{parameter}={self.sslmode}"
         return str(
             PostgresDsn.build(
                 scheme=driver,
@@ -159,6 +214,7 @@ class DatabaseSettings(BaseSettings):
                 host=self.host,
                 port=self.port,
                 path=self.db,
+                query=query,
             )
         )
 
