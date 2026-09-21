@@ -30,24 +30,33 @@ COPY apps/api/pyproject.toml apps/api/pyproject.toml
 # --frozen: fail if uv.lock disagrees with the manifests rather than silently
 # resolving something different from what was tested.
 #
-# `id=uv` is not optional in practice. BuildKit defaults a cache mount's id to
-# its target, so leaving it out builds correctly here and in GitHub Actions --
-# and Railway's Dockerfile validator rejects the whole file before the build
-# even starts:
+# NO CACHE MOUNT HERE, AND THAT IS A DECISION
+# ===========================================
+# There used to be `--mount=type=cache,target=/root/.cache/uv` on both `uv sync`
+# lines. It is valid BuildKit -- it builds here and in GitHub Actions -- and Railway
+# rejects the file outright before the build starts. Naming the id was not enough:
 #
-#   dockerfile invalid: flag '--mount=type=cache,target=/root/.cache/uv'
-#   is missing an id argument at Line 32
+#   dockerfile invalid: flag '--mount=type=cache,target=...'
+#     is missing an id argument
+#   dockerfile invalid: flag '--mount=type=cache,id=uv,target=...'
+#     is missing the cacheKey prefix from its id
 #
-# Naming it changes nothing about the build and makes the sharing explicit: the
-# two stages below deliberately share one uv download cache. The web image
-# always carried `id=pnpm`, which is the only reason it passed the same
-# validator while this one did not.
-RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+# Railway requires `id=s/<service id>-<target path>`, and its documentation is
+# explicit that environment variables are invalid inside a cache mount id. So the
+# only way to keep the mount is to hardcode one platform's service UUID into an
+# image recipe that Compose, CI and every other platform also build -- and to have
+# it silently stop matching, or start failing validation again, the day that service
+# is recreated.
+#
+# The cost of dropping it is small, because it is not what makes rebuilds fast. The
+# COPY order above is: manifests first, then source, so the dependency layer is
+# reused whenever pyproject.toml and uv.lock are unchanged, which is almost every
+# build. The cache mount only helped on the builds that change dependencies, and
+# uv re-resolving from a warm registry is seconds.
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY apps/api/ apps/api/
-RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
