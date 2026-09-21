@@ -29,11 +29,24 @@ COPY apps/api/pyproject.toml apps/api/pyproject.toml
 # --no-dev: ruff, mypy and pytest have no business in a runtime image.
 # --frozen: fail if uv.lock disagrees with the manifests rather than silently
 # resolving something different from what was tested.
-RUN --mount=type=cache,target=/root/.cache/uv \
+#
+# `id=uv` is not optional in practice. BuildKit defaults a cache mount's id to
+# its target, so leaving it out builds correctly here and in GitHub Actions --
+# and Railway's Dockerfile validator rejects the whole file before the build
+# even starts:
+#
+#   dockerfile invalid: flag '--mount=type=cache,target=/root/.cache/uv'
+#   is missing an id argument at Line 32
+#
+# Naming it changes nothing about the build and makes the sharing explicit: the
+# two stages below deliberately share one uv download cache. The web image
+# always carried `id=pnpm`, which is the only reason it passed the same
+# validator while this one did not.
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 COPY apps/api/ apps/api/
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 # ---------------------------------------------------------------------------
