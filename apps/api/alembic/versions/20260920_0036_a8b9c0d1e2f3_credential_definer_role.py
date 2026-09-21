@@ -39,7 +39,9 @@ canonical writes and no trust-verification writes.
 
 THE ROLE ITSELF
 ===============
-`NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`, with no password and no members.
+`NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT`, with no password and no members, plus
+`NOSUPERUSER NOREPLICATION NOBYPASSRLS` wherever this migration runs as a superuser --
+see `upgrade` for why those three are conditional and why that costs nothing.
 It is not an identity anybody authenticates as; it exists only to be the thing the
 function runs as. `NOINHERIT` is belt-and-braces -- it holds no memberships to inherit
 from -- and `NOLOGIN` is what stops it ever being a connection.
@@ -97,9 +99,27 @@ def upgrade() -> None:
         $$;
         """
     )
+    # Split in two because three of these attributes are superuser-only to SET, even
+    # to the value they already hold. A managed provider (Neon, Supabase, RDS) gives
+    # you an owner with CREATEROLE but not SUPERUSER, and naming NOSUPERUSER there
+    # fails the whole migration with "permission denied to alter role".
+    #
+    # Nothing is weakened by making them conditional. SUPERUSER, REPLICATION and
+    # BYPASSRLS are off for any role CREATE ROLE produces, and only a superuser can
+    # turn them on -- so on a cluster with no superuser available to this migration,
+    # there is no path by which the role could have acquired them. The attributes a
+    # CREATEROLE owner *can* grant are exactly the ones still asserted unconditionally.
+    op.execute(f"ALTER ROLE {DEFINER} NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT")
     op.execute(
-        f"ALTER ROLE {DEFINER} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT "
-        f"NOREPLICATION NOBYPASSRLS"
+        f"""
+        DO $$
+        BEGIN
+            IF (SELECT rolsuper FROM pg_roles WHERE rolname = CURRENT_USER) THEN
+                EXECUTE 'ALTER ROLE {DEFINER} NOSUPERUSER NOREPLICATION NOBYPASSRLS';
+            END IF;
+        END
+        $$;
+        """
     )
     # No password, ever. A role with no password and NOLOGIN cannot be authenticated as,
     # whatever the host-based authentication file says.
@@ -111,13 +131,70 @@ def upgrade() -> None:
     op.execute(f"GRANT SELECT ({USER_SELECT}) ON app_user TO {DEFINER}")
     op.execute(f"GRANT UPDATE ({USER_UPDATE}) ON app_user TO {DEFINER}")
 
+    # Handing the function over requires being able to SET ROLE to the new owner.
+    #
+    # A superuser always can, which is why this was never needed locally. A managed
+    # provider's owner (Neon, Supabase, RDS) has CREATEROLE and no superuser, and since
+    # PostgreSQL 16 the membership such a creator is auto-granted on a role it creates
+    # carries ADMIN but neither SET nor INHERIT -- that pair is governed by the
+    # `createrole_self_grant` GUC, which defaults to empty. The result is an owner that
+    # may administer the role but not become it, and `ALTER FUNCTION ... OWNER TO` then
+    # fails with "must be able to SET ROLE".
+    #
+    # SET TRUE, INHERIT FALSE is the whole requirement and the whole grant. The owner
+    # needs to *become* the definer for one statement; it has no business passively
+    # holding the definer's rights on `app_user` and `credential_enrollment` for the
+    # rest of the session, which is what INHERIT would mean.
+    #
+    # Skipped for a superuser, who needs no grant, and below PostgreSQL 16, where
+    # `WITH SET` is not syntax and the creator's auto-grant was full membership
+    # already. Idempotent, so no probe of `pg_auth_members.set_option` -- that column
+    # is itself 16-only and naming it in a statically parsed expression would break
+    # the very clusters the version guard exists to protect.
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = CURRENT_USER)
+               AND current_setting('server_version_num')::int >= 160000 THEN
+                EXECUTE format(
+                    'GRANT {DEFINER} TO %I WITH INHERIT FALSE, SET TRUE', CURRENT_USER
+                );
+            END IF;
+        END
+        $$;
+        """
+    )
+
     # The role must exist and hold its privileges before it owns the function, or the
     # function is briefly owned by a role that cannot execute its own body.
+    # CREATE on the schema, lent for exactly one statement.
+    #
+    # PostgreSQL requires the NEW owner -- not the caller -- to hold CREATE on the
+    # object's schema, so that changing an owner can never achieve something the new
+    # owner could not have achieved by creating the object itself. A superuser is
+    # exempt from that check and from the SET ROLE one above, which is why running
+    # these migrations as a local superuser never exercised either.
+    #
+    # The definer must not keep CREATE: a role whose entire purpose is to own one
+    # function and write two column sets has no business creating schema objects, and
+    # `10-runtime-roles.sh` and `neon-roles.sql` both revoke exactly this from the
+    # service roles. So it is granted, used, and revoked in the same transaction --
+    # ownership persists once set, the privilege does not need to.
+    op.execute(f"GRANT CREATE ON SCHEMA public TO {DEFINER}")
     op.execute(f"ALTER FUNCTION {FUNCTION} OWNER TO {DEFINER}")
+    op.execute(f"REVOKE CREATE ON SCHEMA public FROM {DEFINER}")
 
     # Ownership carries EXECUTE, so re-assert the intended grantees explicitly: changing
     # an owner rewrites the ACL, and "it still works" is not the same as "only app_api
     # can still work".
+    #
+    # These run AS the definer. Granting and revoking on a function is the owner's
+    # right, and the statement above just made that somebody else -- so the role that
+    # began this migration can no longer touch the ACL it is trying to assert. A
+    # superuser could regardless, which is the third and last place that exemption was
+    # hiding. `SET ROLE` is available here because of the membership granted earlier.
+    op.execute(f"SET ROLE {DEFINER}")
     op.execute(f"REVOKE ALL ON FUNCTION {FUNCTION} FROM PUBLIC")
     op.execute(
         f"""
@@ -136,6 +213,10 @@ def upgrade() -> None:
         $$;
         """
     )
+    # Back to the migration identity for whatever runs next. The transaction would
+    # reset it anyway; being explicit means a later statement added to this function
+    # cannot silently execute as the definer.
+    op.execute("RESET ROLE")
 
 
 def downgrade() -> None:
