@@ -379,6 +379,42 @@ def take_ownership_for_finalisation(connection: Connection, lease: Lease) -> Non
         )
 
 
+def oldest_open_cycle(connection: Connection) -> str | None:
+    """The earliest cycle that still has queued work, or ``None`` if there is none.
+
+    WHY A BOUNDED WORKER CANNOT JUST ASK FOR "THIS HOUR"
+    ====================================================
+    `claim` filters on `cycle_key` and never rewrites it, so an attempt queued under
+    one cycle can only ever be claimed by a worker asking for that same cycle. That is
+    correct -- it is what keeps a retry inside the check it belongs to.
+
+    It also means a worker that defaults to the current hour can only do work that was
+    enqueued in the current hour. A scheduled crawl is not shaped like that: enqueueing
+    319 pages takes a moment and draining them takes hours, because `--max-pages`
+    bounds each run so it exits inside its cron window. The second run lands in the
+    next hour, asks for a cycle nothing was queued under, and reports "0 attempted"
+    while the queue sits full.
+
+    That is not hypothetical -- it stranded 304 of 324 attempts on the first deployed
+    run. Twenty were fetched in the half hour the enqueue and the worker happened to
+    share, and every hourly run afterwards found nothing, hour after hour, reporting
+    success each time.
+
+    So the worker asks the queue what to work on rather than assuming. Oldest first,
+    so a cycle is finished before a newer one is started and no cycle is abandoned
+    half-done.
+    """
+    row = connection.execute(
+        text(
+            "SELECT cycle_key FROM fetch_attempt "
+            " WHERE state = 'QUEUED' "
+            " ORDER BY scheduled_for, cycle_key "
+            " LIMIT 1"
+        )
+    ).first()
+    return str(row.cycle_key) if row is not None else None
+
+
 def sweep_expired(
     connection: Connection, *, now: datetime | None = None, limit: int = 100
 ) -> list[uuid.UUID]:
@@ -510,6 +546,7 @@ __all__ = [
     "claim_next",
     "enqueue_cycle",
     "heartbeat",
+    "oldest_open_cycle",
     "release_lease",
     "schedule_retry",
     "sweep_expired",

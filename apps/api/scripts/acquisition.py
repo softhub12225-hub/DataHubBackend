@@ -31,7 +31,7 @@ from sqlalchemy import Engine, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
 from app.domains.acquisition import recovery
-from app.domains.acquisition.lease import enqueue_cycle
+from app.domains.acquisition.lease import enqueue_cycle, oldest_open_cycle
 from app.domains.acquisition.registration import (
     assert_nothing_became_publishable,
     register_acquisition_targets,
@@ -438,7 +438,20 @@ def _dispatch(args: argparse.Namespace, engine: Engine) -> int:
         return 0
 
     if args.command == "worker":
-        cycle = args.cycle or cycle_key_for()
+        # Without --cycle, work the oldest cycle that still has queued attempts rather
+        # than assuming the current hour. `claim` filters on cycle_key, and a bounded
+        # worker cannot drain a cycle inside the hour it was enqueued in, so "this
+        # hour" means a scheduled worker does nothing on every run but the first.
+        # See `oldest_open_cycle`.
+        cycle = args.cycle
+        if cycle is None:
+            with engine.connect() as connection:
+                cycle = oldest_open_cycle(connection)
+            if cycle is None:
+                cycle = cycle_key_for()
+                print(f"no queued work; nothing to do for cycle {cycle}.")
+            else:
+                print(f"working the oldest cycle with queued attempts: {cycle}")
         if (args.max_pages is None or args.max_pages > 20) and not args.i_understand:
             print(
                 "refusing: more than 20 pages contacts a lot of real university "
