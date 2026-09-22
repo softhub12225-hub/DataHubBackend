@@ -1,0 +1,24 @@
+{
+  "name": "overseas-uni-datahub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal university data management and verification platform",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.13.0 <23",
+    "pnpm": ">=9.15.4 <10"
+  },
+  "scripts": {
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "dev": "turbo run dev",
+    "generate:api-types": "node scripts/generate-api-types.mjs",
+    "check:api-types": "node scripts/generate-api-types.mjs --check"
+  },
+  "devDependencies": {
+    "turbo": "2.3.3",
+    "typescript": "5.7.2"
+  }
+}

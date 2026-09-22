@@ -1,0 +1,236 @@
+# Local development stack.
+#
+# Not a production topology: everything binds to localhost, secrets come from .env,
+# and data lives in named volumes. Deployment manifests are a later concern and are
+# deliberately absent (no Kubernetes at this stage).
+#
+# Run from the repository root via the Makefile, which supplies the env file and
+# project name:  make up
+#
+# The Playwright/browser worker is intentionally not defined yet -- there is no
+# browser task to run, and the image would add ~400MB to every `make up`.
+
+name: datahub
+
+services:
+  # ---------------------------------------------------------------------------
+  # Dependencies
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-datahub}
+      POSTGRES_USER: ${POSTGRES_USER:-datahub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Runtime role passwords, consumed by the init script.
+      APP_API_PASSWORD: ${APP_API_PASSWORD:?APP_API_PASSWORD must be set in .env}
+      APP_WORKER_PASSWORD: ${APP_WORKER_PASSWORD:?APP_WORKER_PASSWORD must be set in .env}
+      APP_PUBLISHER_PASSWORD: ${APP_PUBLISHER_PASSWORD:?APP_PUBLISHER_PASSWORD must be set in .env}
+      # Deterministic collation: sort order affects index behaviour, and it must
+      # not vary with the host locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once, on an empty data directory only.
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-datahub} -d ${POSTGRES_DB:-datahub}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # Append-only persistence: a broker that loses queued tasks on restart makes
+    # local debugging of the review/detect pipeline needlessly confusing.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - ""
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID must be set in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY must be set in .env}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: create the evidence bucket, then exit. Keeps bucket provisioning out
+  # of application startup, where it would need admin credentials.
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_EVIDENCE_BUCKET: ${S3_EVIDENCE_BUCKET:-datahub-evidence}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY"
+        mc mb --ignore-existing "local/$$S3_EVIDENCE_BUCKET"
+        # Versioning is enabled from the start: evidence snapshots back published
+        # facts and must not be silently replaced.
+        #
+        # Object Lock / WORM is deliberately NOT configured. It depends on the
+        # production provider and hosting environment (assumption A16), and a locked
+        # local bucket could not be cleaned up by `make down-volumes`. Evidence
+        # integrity is guaranteed at the application and database level instead --
+        # see infra/minio/README.md and ARCHITECTURE.md section 9.1.
+        mc version enable "local/$$S3_EVIDENCE_BUCKET"
+        echo "bucket $$S3_EVIDENCE_BUCKET ready"
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Application roles -- one image, three commands (D11)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file: [../../.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      S3_ENDPOINT_URL: http://minio:9000
+      # Identity separation (C11): the API holds only app_api credentials. The
+      # owning role's password is never placed in this container's environment.
+      POSTGRES_MIGRATION_USER: ""
+      POSTGRES_MIGRATION_PASSWORD: ""
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    # --reload for local development only; the image's default command has no
+    # reloader. Source is mounted read-only so an edit is picked up but the
+    # container cannot modify the working tree.
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/apps/api/src
+    volumes:
+      - ../../apps/api/src:/app/apps/api/src:ro
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file: [../../.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Queues are explicit: this worker must never pick up browser work, which
+    # requires an image it does not have.
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+      - --queues=default,crawl,extract,detect,sla,notify,maint
+    volumes:
+      - ../../apps/api/src:/app/apps/api/src:ro
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  beat:
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file: [../../.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    # The schedule is empty at this stage, so beat starts and idles. It runs now so
+    # that the container topology is validated before there are jobs to schedule.
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - beat
+      - --loglevel=info
+      - --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - ../../apps/api/src:/app/apps/api/src:ro
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-local}
+    restart: unless-stopped
+    environment:
+      # Service DNS, not localhost: the browser talks to the web container, and the
+      # web container talks to the api container.
+      API_BASE_URL: http://api:8000
+      API_TIMEOUT_MS: ${API_TIMEOUT_MS:-5000}
+      NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-local}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,52 @@
+[project]
+name = "datahub-api"
+version = "0.1.0"
+description = "FastAPI backend for the Overseas University Information Platform"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115.6,<0.116",
+    "uvicorn[standard]>=0.34.0,<0.35",
+    "pydantic>=2.10.4,<3",
+    "pydantic-settings>=2.7.0,<3",
+    "sqlalchemy[asyncio]>=2.0.36,<2.1",
+    "asyncpg>=0.30.0,<0.31",
+    "psycopg[binary]>=3.2.3,<4",
+    "alembic>=1.14.0,<2",
+    "redis>=5.2.1,<6",
+    "celery[redis]>=5.4.0,<6",
+    "structlog>=24.4.0,<25",
+    "boto3>=1.35.90,<2",
+    # Reading the client's target-list workbooks. Chosen over a hand-rolled OOXML
+    # reader because shared strings, inline strings, number formats and date
+    # serials all have edge cases, and a governance-critical import is the wrong
+    # place to rediscover them. Used strictly read-only, with `data_only=True` so
+    # cached values are read and no formula is ever evaluated.
+    "openpyxl>=3.1.5,<4",
+    # Step 5C.1 document normalisation.
+    #
+    # lxml, not the stdlib parser: the fleet is 174 real university pages and real
+    # HTML is unclosed, mis-nested and occasionally lying about its encoding. lxml's
+    # recovery parser handles that deterministically, which is the property that
+    # matters here -- a hand-rolled `html.parser` tree builder would rediscover those
+    # edge cases one production page at a time. Configured with networking and entity
+    # resolution OFF: we parse untrusted bytes, and an XXE or an external DTD fetch
+    # would be a parser making an HTTP request (section 18).
+    "lxml>=5.3.0,<6",
+    # pypdf, not PyMuPDF, which section 13 suggested. PyMuPDF gives better block and
+    # reading-order data, and it is AGPL-3.0 -- a licence decision on a commercial
+    # internal product belongs to the client, not to a silent import. The whole fleet
+    # contains exactly ONE registered PDF, so pypdf (BSD-3) is proportionate: it
+    # reads the text layer, page metadata and link annotations, which is everything
+    # section 13 asks for. Swapping to PyMuPDF later is a one-module change, and the
+    # extraction report says whether the text layer quality justifies it.
+    "pypdf>=5.1.0,<6",
+    "argon2-cffi>=25.1.0",
+    "openai>=1.59.0,<2",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]

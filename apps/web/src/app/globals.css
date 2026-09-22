@@ -1,0 +1,181 @@
+/*
+ * Bootstrap-level styling only: enough for a legible shell and a readable status
+ * page. The console's design system arrives with the console itself; adding one now
+ * would mean choosing tokens before there is any UI to choose them for.
+ *
+ * System font stack deliberately -- no webfont fetch at build time.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #16181d;
+  --muted: #5c636e;
+  --border: #dfe3e8;
+  --surface: #f7f8fa;
+  --ok: #157347;
+  --error: #b02a37;
+  --warn: #9a6700;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e8eaed;
+    --muted: #9aa3af;
+    --border: #2b2f36;
+    --surface: #1b1e23;
+    --ok: #4ec27e;
+    --error: #f08a94;
+    --warn: #e0b341;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.shell-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 20px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-brand {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.shell-nav {
+  display: flex;
+  gap: 16px;
+}
+
+.shell-nav a,
+a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-nav a:hover,
+a:hover {
+  border-bottom-color: currentColor;
+}
+
+.shell-main {
+  padding: 24px 0 48px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0 0 8px;
+}
+
+h2 {
+  font-size: 17px;
+  margin: 28px 0 8px;
+}
+
+p {
+  margin: 0 0 12px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.status-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+.status-table th,
+.status-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.status-table th {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-ok {
+  color: var(--ok);
+}
+
+.badge-error {
+  color: var(--error);
+}
+
+.badge-warn {
+  color: var(--warn);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+ul {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}

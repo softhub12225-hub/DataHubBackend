@@ -1,0 +1,229 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  PNPM_VERSION: "9.15.4"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend (lint, typecheck, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_DB: datahub
+          POSTGRES_USER: datahub
+          # CI-only credential for an ephemeral container on a private network.
+          POSTGRES_PASSWORD: ci_postgres_password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U datahub -d datahub"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      ENVIRONMENT: ci
+      LOG_FORMAT: console
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: datahub
+      # Owning role: creates schema objects, runs migrations. Never used by a service.
+      POSTGRES_MIGRATION_USER: datahub
+      POSTGRES_MIGRATION_PASSWORD: ci_postgres_password
+      # Per-service identities (C11). Distinct users and distinct passwords, so a
+      # test that accidentally borrows another role's privileges fails here too.
+      POSTGRES_API_USER: app_api
+      POSTGRES_API_PASSWORD: ci_api_password
+      POSTGRES_WORKER_USER: app_worker
+      POSTGRES_WORKER_PASSWORD: ci_worker_password
+      POSTGRES_PUBLISHER_USER: app_publisher
+      POSTGRES_PUBLISHER_PASSWORD: ci_publisher_password
+      # Consumed by the role-creation script and by the integration fixtures.
+      APP_API_PASSWORD: ci_api_password
+      APP_WORKER_PASSWORD: ci_worker_password
+      APP_PUBLISHER_PASSWORD: ci_publisher_password
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      DATAHUB_TEST_POSTGRES_DSN: postgresql+psycopg://datahub:ci_postgres_password@localhost:5432/datahub
+      DATAHUB_TEST_REDIS_URL: redis://localhost:6379/1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5.13"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        # --frozen: fail if uv.lock disagrees with the manifests, rather than
+        # resolving something different from what was committed.
+        run: uv sync --frozen
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+
+      - name: Type-check (mypy, strict)
+        run: uv run mypy
+
+      # The same script the Postgres container entrypoint runs locally, so role
+      # creation has one definition. GitHub service containers cannot mount
+      # docker-entrypoint-initdb.d, so it is invoked explicitly here.
+      - name: Create runtime database roles
+        env:
+          POSTGRES_USER: datahub
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGPASSWORD: ci_postgres_password
+        run: bash infra/postgres/init/10-runtime-roles.sh
+
+      - name: Apply migrations to an empty database
+        run: uv run alembic upgrade head
+        working-directory: apps/api
+
+      - name: Test
+        run: uv run pytest -v
+
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          # .node-version is the single source of truth, shared with local dev
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Type-check
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm --filter @datahub/web run test
+
+      - name: Build
+        env:
+          # Server-only configuration is read at request time, but the build needs a
+          # syntactically valid value for any module evaluated during prerender.
+          API_BASE_URL: http://localhost:8000
+          NEXT_PUBLIC_APP_ENV: ci
+        run: pnpm --filter @datahub/web run build
+
+  # ---------------------------------------------------------------------------
+  api-contract:
+    name: Generated API types are current
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5.13"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          # .node-version is the single source of truth, shared with local dev
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen
+          pnpm install --frozen-lockfile
+
+      # Regenerates the contract from the FastAPI app and fails if the committed
+      # openapi.json or schema.d.ts differ. Requires no database: the app is
+      # importable without one by design.
+      - name: Check for contract drift
+        run: pnpm check:api-types
+
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only -- no registry push and no deployment at this stage.
+      - name: Build api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web

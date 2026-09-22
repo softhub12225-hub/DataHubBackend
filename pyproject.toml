@@ -1,0 +1,170 @@
+[project]
+name = "overseas-uni-datahub-workspace"
+version = "0.1.0"
+description = "uv workspace root for the Overseas University Information Platform"
+requires-python = ">=3.12,<3.13"
+dependencies = ["datahub-api"]
+
+# Development tooling lives at the root, not in the application package: it is not a
+# dependency of the deployed artifact, and the api image must not ship a type
+# checker. `uv sync` installs this group by default; `uv sync --no-dev` does not.
+[dependency-groups]
+dev = [
+    "ruff>=0.8.4,<0.9",
+    "mypy>=1.14.0,<2",
+    "pytest>=8.3.4,<9",
+    "pytest-asyncio>=0.25.0,<0.26",
+    "httpx>=0.28.1,<0.29",
+    "boto3-stubs[s3]>=1.35.90,<2",
+    "celery-types>=0.22.0,<0.23",
+    # lxml ships no inline types; without these `mypy --strict` cannot see through the
+    # parser and every element access becomes Any.
+    "lxml-stubs>=0.5.1,<0.6",
+]
+
+# The workspace root is not itself an installable application; it exists to hold a
+# single uv.lock and one copy of the shared tool configuration.
+[tool.uv.workspace]
+members = ["apps/api"]
+
+[tool.uv.sources]
+datahub-api = { workspace = true }
+
+[tool.uv]
+package = false
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["apps/api/src", "apps/api/tests"]
+extend-exclude = ["apps/api/alembic/versions/*.pyi"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez -- enforces timezone-aware datetimes
+    "T20",  # flake8-print -- no stray print()
+    "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+    "RUF",  # ruff-specific
+    "ASYNC",
+    "S",    # flake8-bandit
+]
+ignore = [
+    "S101",  # assert is expected in tests; narrowed below rather than banned outright
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S101/S105/S106: asserts and literal credentials are the point of a test suite.
+# S608: table names in test SQL are interpolated from our own constant tuples
+#       (app.db.classification), never from input.
+# RUF001/RUF003: test fixtures reproduce the client's Chinese column headers and
+#     region labels, full-width punctuation included. That is the data under test,
+#     not a homoglyph mistake.
+"apps/api/tests/**" = ["S101", "S105", "S106", "S608", "RUF001", "RUF003"]
+"apps/api/alembic/env.py" = ["I001"]
+# Migration files are largely rendered DDL:
+#   E501   - a single CHECK constraint can be a 700-character SQL string that cannot
+#            be wrapped without changing the SQL.
+#   RUF001 - Chinese seed values use full-width punctuation, which is correct
+#            typography, not a homoglyph mistake.
+#   S608   - the seed helper interpolates table names from module-level literals.
+"apps/api/alembic/versions/*" = ["E501", "RUF001", "S608"]
+"apps/api/scripts/*" = ["T20"]  # these scripts are CLI tools; stdout is their interface
+# RUF001/RUF003: these two modules exist to handle the characters the rule flags.
+# `naming.py` folds curly quotes and the six Unicode dashes to ASCII, so it must name
+# them; `target_list.py` matches the full-width punctuation real Chinese-authored
+# spreadsheets use in their column headers. Flagging them as homoglyph mistakes is
+# exactly backwards here.
+"apps/api/src/app/domains/onboarding/naming.py" = ["RUF001", "RUF003"]
+"apps/api/src/app/domains/onboarding/target_list.py" = ["RUF001", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "apps/api/src"
+files = ["apps/api/src", "apps/api/tests", "apps/api/alembic", "apps/api/scripts"]
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = true
+no_implicit_reexport = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Alembic's generated env/version modules are not worth annotating end to end.
+module = ["alembic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# openpyxl ships no type information. The `types-openpyxl` stubs exist but are
+# partial and lag the library, so an incorrect annotation would be worse than none:
+# `domains/onboarding/workbook.py` confines the untyped surface to one function and
+# converts every cell to a checked Python value before it reaches anything else.
+module = ["openpyxl.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["apps/api/tests"]
+pythonpath = ["apps/api/src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: requires live Postgres/Redis (skipped when unavailable)",
+]
+filterwarnings = [
+    # Every warning is an error. This is load-bearing: it is what turned a SQLAlchemy
+    # relationship misconfiguration into a failing test rather than a log line (C24).
+    "error",
+    # ...except the two classes raised by the **garbage collector**. An unclosed socket
+    # or event loop is reported whenever collection happens to run, so pytest attributes
+    # it to an unrelated test and fails that one. Measured: the suite failed 3 of 7 runs
+    # on a rotating cast of innocent tests, and 0 of 3 with these demoted.
+    #
+    # Not a product defect: the acquisition fetcher closes its client via `async with`
+    # and its responses via `aclose()`. The leak is test scaffolding -- loopback
+    # fixture-server sockets, and one `ProactorEventLoop` per `asyncio.run` on Windows.
+    # Worth fixing at the source; demoted here so the gate means something meanwhile.
+    "default::ResourceWarning",
+    # The unraisable wrapper is narrowed to the two messages actually observed -- an
+    # unclosed loopback socket from the fixture HTTP server, and an unclosed
+    # `ProactorEventLoop` from a per-test `asyncio.run` on Windows. Demoting the whole
+    # class would also hide an unraisable exception from something that mattered, which
+    # is a different and worse trade. Any other unraisable exception is still an error.
+    #
+    # pytest's filter syntax is `action:message:category:module:lineno` and splits on
+    # colons, so the message regex cannot contain one -- this pytest does not honour
+    # the `\:` escape. The `.` after "in" matches the literal colon instead, which
+    # keeps the pattern anchored and colon-free.
+    "default:Exception ignored in. <socket:pytest.PytestUnraisableExceptionWarning",
+    "default:Exception ignored in. <function BaseEventLoop:pytest.PytestUnraisableExceptionWarning",
+    "default:Exception ignored in. <_ProactorBasePipeTransport:pytest.PytestUnraisableExceptionWarning",
+]

@@ -1,0 +1,129 @@
+# Controlled real-web acquisition smoke set (Step 5B.1)
+#
+# WHAT THIS IS, AND WHAT IT IS NOT
+# ===============================
+# Twelve physical pages from the client's real source list, chosen to cover the
+# technical cases the acquisition stack has only ever seen as fixtures. It exists so
+# the first contact with real university infrastructure is *twelve deliberate
+# requests* rather than 319, and so that run is reproducible rather than a one-off
+# someone did by hand.
+#
+# It is **not** business configuration. Nothing reads it at runtime, no scheduler
+# consults it, and it confers nothing on the sources it names -- they are exactly as
+# publication-ineligible as the other 307. Deleting this file would change no
+# behaviour beyond the smoke command.
+#
+# SELECTION RULES
+# ===============
+# * one page per institution, so twelve requests hit twelve hosts and no university
+#   sees a burst;
+# * every core source category represented once;
+# * all six destinations represented (US, GB, AU, HK, CA, SG);
+# * the two structurally unusual URLs named explicitly -- UBC's query-addressed
+#   calendar and Caltech's direct PDF;
+# * one `UNCLASSIFIED` page, because "fetchable without a category" is a claim Step 5B
+#   makes and should be tested against a real server;
+# * no URL appears twice, so no duplicate responsibility claim is fetched twice.
+#
+# `source_ref` is submission-local and only meaningful inside the current import;
+# `url` is the stable identity and what the loader matches on. If a re-import changes
+# the refs, the URLs still resolve.
+
+version = "2026-09-19"
+expected_pages = 12
+
+[[page]]
+ref = "S0001"
+institution = "Imperial College London"
+destination = "GB"
+category = "UNIVERSITY_HOME"
+url = "https://www.imperial.ac.uk/"
+why = "plain institutional homepage; the simplest possible success case"
+
+[[page]]
+ref = "S0024"
+institution = "University of Oxford"
+destination = "GB"
+category = "UNDERGRADUATE_ADMISSIONS"
+url = "https://www.ox.ac.uk/admissions/undergraduate"
+why = "undergraduate admissions; host resolves through a CDN (two A records)"
+
+[[page]]
+ref = "S0087"
+institution = "National University of Singapore (NUS)"
+destination = "SG"
+category = "ACADEMIC_CALENDAR"
+url = "https://nus.edu.sg/registrar/academic-activities/academic-calendar"
+why = "Singapore institution; academic calendar as HTML rather than a document"
+
+[[page]]
+ref = "S0091"
+institution = "The University of Hong Kong"
+destination = "HK"
+category = "POSTGRADUATE_ADMISSIONS"
+url = "https://admissions.hku.hk/tpg/"
+why = "Hong Kong institution; taught-postgraduate admissions on a subdomain"
+
+[[page]]
+ref = "S0382"
+institution = "The Hong Kong Polytechnic University"
+destination = "HK"
+category = "TUITION_FEES"
+url = "https://www.polyu.edu.hk/study/ug/admissions/tuition-fees/"
+why = "Hong Kong institution; fee page, the highest-risk field category"
+
+[[page]]
+ref = "S0017"
+institution = "Stanford University"
+destination = "US"
+category = "ENTRY_REQUIREMENTS"
+url = "https://admission.stanford.edu/apply/first-year/"
+why = "US institution; entry requirements"
+
+[[page]]
+ref = "S0065"
+institution = "California Institute of Technology (Caltech)"
+destination = "US"
+category = "ACADEMIC_CALENDAR"
+url = "https://registrar.caltech.edu/documents/25766/AcademicCalendar2026-27.pdf"
+why = "the only direct PDF in the workbook; DOCUMENT fetch strategy"
+
+[[page]]
+ref = "S0258"
+institution = "Monash University"
+destination = "AU"
+category = "PROGRAM_CATALOG"
+url = "https://www.monash.edu/study/courses"
+why = "programme catalogue; likely the largest and most dynamic page in the set"
+
+[[page]]
+ref = "S0240"
+institution = "Australian National University (ANU)"
+destination = "AU"
+category = "APPLICATION_DEADLINES"
+url = "https://www.anu.edu.au/study/apply"
+why = "Australian institution; deadlines"
+
+[[page]]
+ref = "S0271"
+institution = "University of Toronto"
+destination = "CA"
+category = "LANGUAGE_REQUIREMENTS"
+url = "https://www.sgs.utoronto.ca/admissions/international-applicants/english-language-proficiency/"
+why = "Canadian institution; English-language requirements"
+
+[[page]]
+ref = "S0362"
+institution = "University of British Columbia"
+destination = "CA"
+category = "ACADEMIC_CALENDAR"
+url = "https://www.calendar.ubc.ca/vancouver/index.cfm?tree=2%2C0%2C0%2C0"
+why = "the only query-addressed URL; proves the query survives normalisation intact"
+
+[[page]]
+ref = "S0286"
+institution = "The Hong Kong University of Science and Technology"
+destination = "HK"
+category = "UNCLASSIFIED"
+url = "https://ebookshelf.hkust.edu.hk/flippingbook/G23589_AdmissionFlyer/"
+why = """an additional-source page with no stated category: fetchable without one (D32). Also the set's most likely JavaScript shell -- a flipbook viewer -- which is exactly the evidence Step 5C needs before anyone argues for a browser fetcher."""

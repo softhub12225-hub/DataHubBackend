@@ -1,0 +1,52 @@
+# Normalise line endings.
+#
+# This is not cosmetic. `infra/postgres/init/*.sh` is executed by the Postgres
+# container's entrypoint; checked out with CRLF on Windows and committed that way,
+# it fails inside the Linux container with "bad interpreter: no such file or
+# directory". The same applies to any Dockerfile RUN script and to the Makefile.
+
+* text=auto eol=lf
+
+# Explicitly LF regardless of platform or content sniffing.
+*.sh      text eol=lf
+*.py      text eol=lf
+*.sql     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.mjs     text eol=lf
+*.css     text eol=lf
+*.md      text eol=lf
+*.toml    text eol=lf
+*.ini     text eol=lf
+*.mako    text eol=lf
+Makefile  text eol=lf
+Dockerfile   text eol=lf
+*.Dockerfile text eol=lf
+.env.example text eol=lf
+
+# Windows-only entry points. CRLF on purpose, and pinned rather than left to
+# `text=auto`: cmd.exe is the one interpreter here that can misread an LF-only
+# script, and review.cmd exists precisely to be the reliable way in on a machine
+# with no make.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Generated, and committed so CI can detect contract drift. Marking them keeps
+# review diffs collapsed and keeps them out of language statistics.
+packages/api-types/openapi.json    linguist-generated=true
+packages/api-types/src/schema.d.ts linguist-generated=true
+
+# Lockfiles: never merged by hand.
+uv.lock        -diff merge=binary
+pnpm-lock.yaml -diff merge=binary
+
+# Binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.docx binary
+*.pdf binary

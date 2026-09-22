@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Secrets -- never commit
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Node
+# ---------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# NOT ignored, on purpose:
+#   uv.lock, pnpm-lock.yaml          -- reproducible installs
+#   packages/api-types/openapi.json  -- generated, but committed so CI can
+#   packages/api-types/src/schema.d.ts  detect drift from the FastAPI contract
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Locally derived data -- regenerable, and large
+# ---------------------------------------------------------------------------
+# Stored evidence and normalised document artifacts from a real pilot run, and the
+# reviewer manifests generated from them. All three are reproduced by a documented
+# command (`make extract-documents`, `make claims-run`, `make verify-manifest`) and
+# none of them is a source of truth, so committing them would only add churn.
+.evidence-*/
+.artifacts-*/
+.reports/

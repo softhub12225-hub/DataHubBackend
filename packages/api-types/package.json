@@ -1,0 +1,26 @@
+{
+  "name": "@datahub/api-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript types generated from the FastAPI OpenAPI document. Do not hand-edit.",
+  "type": "module",
+  "types": "./src/schema.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/schema.d.ts"
+    },
+    "./openapi.json": "./openapi.json"
+  },
+  "files": [
+    "src/schema.d.ts",
+    "openapi.json"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "//": "Generation lives in scripts/generate-api-types.mjs at the repository root, so the pipeline and its flags are defined exactly once. Run `pnpm generate:api-types` from the root.",
+  "devDependencies": {
+    "openapi-typescript": "7.5.2",
+    "typescript": "5.7.2"
+  }
+}
