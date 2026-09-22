@@ -305,6 +305,7 @@ dependencies = [
     { name = "boto3" },
     { name = "celery", extra = ["redis"] },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "lxml" },
     { name = "openpyxl" },
     { name = "psycopg", extra = ["binary"] },
@@ -325,6 +326,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35.90,<2" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4.0,<6" },
     { name = "fastapi", specifier = ">=0.115.6,<0.116" },
+    { name = "httpx", specifier = ">=0.28.1,<0.29" },
     { name = "lxml", specifier = ">=5.3.0,<6" },
     { name = "openpyxl", specifier = ">=3.1.5,<4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.3,<4" },
@@ -629,7 +631,6 @@ dependencies = [
 dev = [
     { name = "boto3-stubs", extra = ["s3"] },
     { name = "celery-types" },
-    { name = "httpx" },
     { name = "lxml-stubs" },
     { name = "mypy" },
     { name = "pytest" },
@@ -644,7 +645,6 @@ requires-dist = [{ name = "datahub-api", editable = "apps/api" }]
 dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.35.90,<2" },
     { name = "celery-types", specifier = ">=0.22.0,<0.23" },
-    { name = "httpx", specifier = ">=0.28.1,<0.29" },
     { name = "lxml-stubs", specifier = ">=0.5.1,<0.6" },
     { name = "mypy", specifier = ">=1.14.0,<2" },
     { name = "pytest", specifier = ">=8.3.4,<9" },

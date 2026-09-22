@@ -14,7 +14,10 @@ dev = [
     "mypy>=1.14.0,<2",
     "pytest>=8.3.4,<9",
     "pytest-asyncio>=0.25.0,<0.26",
-    "httpx>=0.28.1,<0.29",
+    # httpx is NOT here any more. It reads as a test client next to pytest, and that
+    # is how the acquisition fetcher's runtime dependency came to be excluded from
+    # the production image by `--no-dev`. It is declared by `datahub-api`, which this
+    # root depends on, so the tests still get it.
     "boto3-stubs[s3]>=1.35.90,<2",
     "celery-types>=0.22.0,<0.23",
     # lxml ships no inline types; without these `mypy --strict` cannot see through the

@@ -41,6 +41,17 @@ dependencies = [
     # extraction report says whether the text layer quality justifies it.
     "pypdf>=5.1.0,<6",
     "argon2-cffi>=25.1.0",
+    # The acquisition fetcher's HTTP client. A RUNTIME dependency, not a test one.
+    #
+    # It lived in the workspace root's `dev` group next to ruff, mypy and pytest --
+    # presumably added when the tests needed an HTTP client -- and the image builds
+    # with `uv sync --no-dev`, exactly as it should. The API never noticed, because
+    # nothing on a request path imports the fetcher. The crawler imports it at module
+    # load, so the deployed image could not run an acquisition command at all:
+    # `ModuleNotFoundError: No module named 'httpx'`, on the first scheduled sweep.
+    #
+    # Found by deploying the one crawler command that sends no HTTP requests.
+    "httpx>=0.28.1,<0.29",
 ]
 
 [build-system]
