@@ -443,20 +443,17 @@ class AiKnowledgeRunRequest(BaseModel):
 
 def _run_ai_knowledge_job(*, limit: int | None, acknowledge_cost: bool) -> None:
     """Runs on the API process after the HTTP response — OpenAI stays on the online backend."""
-    global _ai_knowledge_job
     engine = ai_knowledge_collect.engine_for()
     try:
         with _ai_knowledge_lock:
-            _ai_knowledge_job = {"status": "running", "limit": limit}
+            _ai_knowledge_job.clear()
+            _ai_knowledge_job.update({"status": "running", "limit": limit})
 
         def progress(name: str, kept: int, error: str | None) -> None:
             with _ai_knowledge_lock:
-                _ai_knowledge_job = {
-                    **_ai_knowledge_job,
-                    "last_institution": name,
-                    "last_facts": kept,
-                    "last_error": error,
-                }
+                _ai_knowledge_job["last_institution"] = name
+                _ai_knowledge_job["last_facts"] = kept
+                _ai_knowledge_job["last_error"] = error
 
         result = ai_knowledge_collect.run_collection(
             engine,
@@ -465,7 +462,8 @@ def _run_ai_knowledge_job(*, limit: int | None, acknowledge_cost: bool) -> None:
             progress=progress,
         )
         with _ai_knowledge_lock:
-            _ai_knowledge_job = {"status": "completed", **result}
+            _ai_knowledge_job.clear()
+            _ai_knowledge_job.update({"status": "completed", **result})
         logger.info(
             "ai_knowledge_collect_finished",
             status=result.get("status"),
@@ -474,10 +472,13 @@ def _run_ai_knowledge_job(*, limit: int | None, acknowledge_cost: bool) -> None:
         )
     except Exception as exc:
         with _ai_knowledge_lock:
-            _ai_knowledge_job = {
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            _ai_knowledge_job.clear()
+            _ai_knowledge_job.update(
+                {
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
         logger.exception("ai_knowledge_collect_failed")
     finally:
         engine.dispose()
