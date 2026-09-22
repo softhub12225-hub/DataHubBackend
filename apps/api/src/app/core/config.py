@@ -81,6 +81,14 @@ SSL_QUERY_PARAMETER: dict[str, str] = {
     "postgresql+asyncpg": "ssl",
 }
 
+
+class EvidenceBackend(StrEnum):
+    """Where fetched evidence bytes are stored. See `Settings.evidence_backend`."""
+
+    FILESYSTEM = "filesystem"
+    S3 = "s3"
+
+
 #: Identities that must never be the schema owner. Enforced in every environment.
 NON_OWNER_ROLES: tuple[DatabaseRole, ...] = (
     DatabaseRole.API,
@@ -381,6 +389,24 @@ class Settings(BaseSettings):
     #: so what a reviewer sees is the artifact the extraction actually produced.
     artifact_root: str = ".artifacts-full"
 
+    #: Which evidence store the acquisition pipeline writes to: ``filesystem`` or ``s3``.
+    #:
+    #: EXPLICIT, AND NEVER INFERRED FROM WHETHER S3 LOOKS CONFIGURED
+    #: ============================================================
+    #: The tempting version of this reads "use S3 if an endpoint is set, otherwise the
+    #: filesystem". That version fails silently in the one way that matters: a typo in
+    #: `S3_ENDPOINT_URL` on a deployed service would fall back to a local directory
+    #: inside a container, write evidence there, and lose it on the next deploy --
+    #: leaving `content_blob` rows pointing at bytes that no longer exist. Dangling
+    #: evidence is worse than absent evidence on a platform whose claim is that every
+    #: published figure cites a stored snapshot.
+    #:
+    #: So the backend is named, and naming ``s3`` without real credentials is a startup
+    #: error rather than a fallback. The default stays ``filesystem`` because S3 needs
+    #: Docker or a remote bucket, and a developer should be able to run the pipeline
+    #: without either.
+    evidence_backend: EvidenceBackend = EvidenceBackend.FILESYSTEM
+
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
@@ -430,6 +456,34 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"environment={self.environment} requires real secrets; "
                 f"placeholder values found for: {', '.join(offenders)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _s3_backend_needs_real_credentials(self) -> Self:
+        """Naming the S3 backend without credentials is an error, not a fallback.
+
+        The whole point of `evidence_backend` being explicit is that a misconfigured
+        deployment stops instead of quietly writing evidence to a container's
+        temporary disk. That guarantee only holds if this refuses to start.
+        """
+        if self.evidence_backend is not EvidenceBackend.S3:
+            return self
+        storage = self.object_storage
+        missing = [
+            name
+            for name, value in (
+                ("S3_ENDPOINT_URL", storage.endpoint_url),
+                ("S3_ACCESS_KEY_ID", storage.access_key_id.get_secret_value()),
+                ("S3_SECRET_ACCESS_KEY", storage.secret_access_key.get_secret_value()),
+                ("S3_EVIDENCE_BUCKET", storage.evidence_bucket),
+            )
+            if not value or value.strip().lower() in PLACEHOLDER_SECRETS
+        ]
+        if missing:
+            raise ValueError(
+                "EVIDENCE_BACKEND=s3 requires real object-storage settings; "
+                f"missing or placeholder: {', '.join(missing)}"
             )
         return self
 

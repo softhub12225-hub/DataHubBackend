@@ -42,7 +42,7 @@ from app.domains.acquisition.reporting import (
     verification_assistance,
 )
 from app.domains.acquisition.runner import run_cycle
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import build_evidence_store
 from app.workers.tasks.crawl import cycle_key_for
 
 
@@ -433,7 +433,7 @@ def _dispatch(args: argparse.Namespace, engine: Engine) -> int:
                 file=sys.stderr,
             )
             return 2
-        store = FilesystemEvidenceStore(args.evidence_root)
+        store = build_evidence_store(get_settings(), local_root=args.evidence_root)
         worker_name = f"cli:{uuid.uuid4().hex[:8]}"
         result = asyncio.run(
             run_cycle(

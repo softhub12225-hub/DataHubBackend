@@ -46,7 +46,7 @@ from app.domains.acquisition.netsafety import (
 from app.domains.acquisition.recorder import conditional_headers_for
 from app.domains.acquisition.runner import HostGate, run_cycle
 from app.domains.acquisition.storage import (
-    FilesystemEvidenceStore,
+    build_evidence_store,
     find_missing_objects,
 )
 
@@ -182,7 +182,7 @@ def run(engine: Engine, pages: list[SmokePage], *, cycle: str, evidence_root: Pa
     print(report.summary())
     print()
 
-    store = FilesystemEvidenceStore(evidence_root)
+    store = build_evidence_store(get_settings(), local_root=evidence_root)
     fetcher = StaticHttpFetcher(SMOKE_POLICY)
     gate = HostGate(min_interval_seconds=SMOKE_HOST_INTERVAL_SECONDS)
     result = asyncio.run(
@@ -404,7 +404,7 @@ def audit(engine: Engine, pages: list[SmokePage], *, evidence_root: Path) -> int
             print("        bodies above came from pages outside this smoke set.")
 
         print("\n=== OBJECT-STORE INTEGRITY (filesystem backend) ===")
-        store = FilesystemEvidenceStore(evidence_root)
+        store = build_evidence_store(get_settings(), local_root=evidence_root)
         known = connection.execute(
             text(
                 "SELECT b.content_hash, b.byte_size FROM content_blob b "

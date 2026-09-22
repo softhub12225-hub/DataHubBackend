@@ -22,7 +22,6 @@ calling the same `_evaluate` the apply path calls.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Request, Response, status
@@ -40,7 +39,7 @@ from app.api.review.deps import (
     set_session_cookies,
 )
 from app.core.logging import get_logger
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import build_evidence_store
 from app.domains.claims import precedence as candidate_precedence
 from app.domains.claims import resolution as candidate_resolution
 from app.domains.extraction.runner import DERIVED_PREFIX
@@ -488,7 +487,7 @@ async def evidence(
             ),
         }
 
-    store = FilesystemEvidenceStore(Path(config.artifact_root), prefix=DERIVED_PREFIX)
+    store = build_evidence_store(config, prefix=DERIVED_PREFIX)
     try:
         document = source_body.load(store, found)
     except (source_body.SourceBodyError, FileNotFoundError) as exc:

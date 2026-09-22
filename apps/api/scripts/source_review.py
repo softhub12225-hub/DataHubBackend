@@ -47,7 +47,7 @@ from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
 
 from app.core.config import DatabaseRole, get_settings
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import build_evidence_store
 from app.domains.extraction.runner import DERIVED_PREFIX
 from app.domains.identity.accounts import (
     AccountRefusedError,
@@ -1000,7 +1000,9 @@ def command_source_body(args: argparse.Namespace) -> int:
             print("    is not evidence either. No new fetch was attempted.")
             return 0
 
-        store = FilesystemEvidenceStore(Path(args.artifact_root), prefix=DERIVED_PREFIX)
+        store = build_evidence_store(
+            get_settings(), prefix=DERIVED_PREFIX, local_root=Path(args.artifact_root)
+        )
         document = load_body(store, evidence)
         print(f"  blocks / tables    : {len(document.blocks)} / {len(document.tables)}")
         print()

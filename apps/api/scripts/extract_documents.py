@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import Connection, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import EvidenceStore, build_evidence_store
 from app.domains.extraction.document import EXTRACTOR_VERSION, PDF_EXTRACTOR
 from app.domains.extraction.runner import DERIVED_PREFIX, run_extraction
 
@@ -39,8 +39,10 @@ def _engine(role: DatabaseRole) -> Any:
 
 def command_run(args: argparse.Namespace) -> int:
     engine = _engine(DatabaseRole.WORKER)
-    evidence = FilesystemEvidenceStore(args.evidence_root)
-    artifacts = FilesystemEvidenceStore(args.artifact_root, prefix=DERIVED_PREFIX)
+    evidence = build_evidence_store(get_settings(), local_root=args.evidence_root)
+    artifacts = build_evidence_store(
+        get_settings(), prefix=DERIVED_PREFIX, local_root=args.artifact_root
+    )
     print(f"evidence   {args.evidence_root}")
     print(f"artifacts  {args.artifact_root} (prefix {DERIVED_PREFIX}/)")
     print(f"version    {EXTRACTOR_VERSION}")
@@ -220,7 +222,9 @@ def _pdf(connection: Connection, artifact_root: Path) -> None:
     if not rows:
         print("  No PDF was extracted.")
         return
-    artifacts = FilesystemEvidenceStore(artifact_root, prefix=DERIVED_PREFIX)
+    artifacts = build_evidence_store(
+        get_settings(), prefix=DERIVED_PREFIX, local_root=artifact_root
+    )
     for row in rows:
         stats = row.output.get("statistics", {})
         print(f"  {row.url}")
@@ -283,7 +287,9 @@ def command_jsonld(args: argparse.Namespace) -> int:
 def command_thin(args: argparse.Namespace) -> int:
     """Section 21: what the possible-browser pages actually yielded, offline."""
     engine = _engine(DatabaseRole.API)
-    artifacts = FilesystemEvidenceStore(args.artifact_root, prefix=DERIVED_PREFIX)
+    artifacts = build_evidence_store(
+        get_settings(), prefix=DERIVED_PREFIX, local_root=args.artifact_root
+    )
     with engine.connect() as connection:
         print("=" * 78)
         print("LOW-TEXT PAGES: is a browser genuinely needed? (section 21)")
@@ -325,7 +331,7 @@ def command_thin(args: argparse.Namespace) -> int:
 
 
 def _browser_verdict(
-    artifacts: FilesystemEvidenceStore, document_hash: str | None
+    artifacts: EvidenceStore, document_hash: str | None
 ) -> tuple[str, list[str]]:
     """Whether the embedded JSON holds recoverable prose, or only a shell.
 

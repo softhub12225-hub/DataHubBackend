@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.core.clock import utcnow
+from app.core.config import EvidenceBackend, Settings
 from app.core.logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -197,13 +198,20 @@ class FilesystemEvidenceStore(EvidenceStore):
 
 
 class S3EvidenceStore(EvidenceStore):
-    """S3 or MinIO. The deployed store.
+    """S3-compatible object storage. The deployed store.
 
-    **Unverified against a real MinIO container**: Docker is unavailable on the
-    development machine, so this class has never opened a connection. It is written
-    against the same contract as the filesystem store and is exercised by the same
-    tests through that contract, which is not the same as having run it.
-    `make verify-docker` remains the gate.
+    **Verified against a real endpoint.** This said it had never opened a connection,
+    which was true until it was driven against an IDrive e2 bucket (us-west-2) through
+    `build_evidence_store`: put, dedup-on-second-put, exists, get with a sha256
+    comparison, list_keys and delete all behaved as the contract requires.
+
+    "S3" here means the S3 API, not AWS specifically. It uses only put_object,
+    get_object, head_object, list_objects_v2 and delete_object -- no storage classes,
+    no ACLs, no KMS -- so any provider implementing that core works. The endpoint,
+    region and path-style addressing come from `ObjectStorageSettings`.
+
+    MinIO specifically is still unexercised, since it needs Docker and Docker is not
+    available on the development machine; `make verify-docker` remains that gate.
     """
 
     def __init__(self, client: S3Client, bucket: str, *, prefix: str = EVIDENCE_PREFIX) -> None:
@@ -300,6 +308,41 @@ def find_missing_objects(store: EvidenceStore, known_hashes: set[str]) -> list[s
     return sorted(h for h in known_hashes if not store.exists(h))
 
 
+def build_evidence_store(
+    settings: Settings,
+    *,
+    prefix: str = EVIDENCE_PREFIX,
+    local_root: Path | str | None = None,
+) -> EvidenceStore:
+    """The evidence store this process should write to.
+
+    WHY A FACTORY AND NOT A CONSTRUCTOR AT EACH CALL SITE
+    =====================================================
+    There were six call sites, and every one of them built `FilesystemEvidenceStore`
+    directly. That made `S3EvidenceStore` unreachable: the S3 settings existed, could
+    be filled in correctly, and would change nothing -- which is the worst kind of
+    configuration, because it looks applied. One factory means selecting the backend
+    is a single decision made in one place, and adding a seventh caller cannot
+    silently opt out of it.
+
+    `local_root` lets a caller override where the filesystem backend writes -- the
+    smoke script and the acquisition CLI both take an evidence root argument. It is
+    ignored when the backend is S3, where the bucket is the root.
+
+    `prefix` namespaces the keys: raw fetched bytes under `evidence/`, derived
+    documents under `derived/`, so the two cannot overwrite one another.
+    """
+    if settings.evidence_backend is EvidenceBackend.S3:
+        from app.core.object_storage import create_client_from_settings
+
+        return S3EvidenceStore(
+            create_client_from_settings(settings),
+            settings.object_storage.evidence_bucket,
+            prefix=prefix,
+        )
+    return FilesystemEvidenceStore(local_root or settings.artifact_root, prefix=prefix)
+
+
 __all__ = [
     "EVIDENCE_PREFIX",
     "ORPHAN_MIN_AGE",
@@ -307,6 +350,7 @@ __all__ = [
     "FilesystemEvidenceStore",
     "S3EvidenceStore",
     "StoredObject",
+    "build_evidence_store",
     "find_missing_objects",
     "find_orphans",
     "hash_bytes",

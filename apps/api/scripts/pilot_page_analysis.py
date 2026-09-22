@@ -31,7 +31,7 @@ from typing import Any
 from sqlalchemy import Connection, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import EvidenceStore, build_evidence_store
 
 # --- crude, on purpose -------------------------------------------------------------
 # These are counts for sizing a parser, not a parse. A real extractor will use a proper
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     engine = create_engine(settings.database.sync_dsn(DatabaseRole.API), future=True)
-    store = FilesystemEvidenceStore(args.evidence_root)
+    store = build_evidence_store(get_settings(), local_root=args.evidence_root)
 
     shapes: list[PageShape] = []
     unavailable: list[dict[str, Any]] = []
@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _analyse_stored(connection: Connection, store: FilesystemEvidenceStore) -> list[PageShape]:
+def _analyse_stored(connection: Connection, store: EvidenceStore) -> list[PageShape]:
     rows = connection.execute(
         text(
             "SELECT DISTINCT ON (sn.source_id) sn.source_id, s.url, sn.content_type, "

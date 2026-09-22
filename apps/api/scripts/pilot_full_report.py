@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy import Connection, Engine, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
-from app.domains.acquisition.storage import FilesystemEvidenceStore, find_missing_objects
+from app.domains.acquisition.storage import build_evidence_store, find_missing_objects
 
 #: Ordered so a reader sees the population before the outcomes, and the outcomes before
 #: the integrity checks that qualify them.
@@ -221,7 +221,7 @@ def evidence(connection: Connection, cycle: str) -> None:
 def integrity(connection: Connection, cycle: str, evidence_root: Path) -> None:
     _title("5. OBJECT-STORE INTEGRITY (filesystem backend)")
     print(f"  store root                        {evidence_root}")
-    store = FilesystemEvidenceStore(evidence_root)
+    store = build_evidence_store(get_settings(), local_root=evidence_root)
     known = _rows(connection, "SELECT content_hash, byte_size, storage_key FROM content_blob")
     missing = find_missing_objects(store, {row.content_hash for row in known})
     hash_bad: list[str] = []

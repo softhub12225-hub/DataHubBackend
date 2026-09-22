@@ -25,7 +25,7 @@ from app.core.config import DatabaseRole, get_settings
 from app.core.logging import get_logger
 from app.domains.acquisition.lease import enqueue_cycle
 from app.domains.acquisition.runner import run_cycle, sweep_and_report
-from app.domains.acquisition.storage import EvidenceStore, FilesystemEvidenceStore
+from app.domains.acquisition.storage import EvidenceStore, build_evidence_store
 from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
@@ -54,13 +54,13 @@ def _engine() -> Any:
 def _store() -> EvidenceStore:
     """The evidence store this worker writes to.
 
-    Filesystem by default. S3/MinIO needs Docker, which is unavailable on the
-    development machine, so defaulting to S3 would mean the worker cannot start
-    locally at all -- see `storage.py` and the Docker gate.
+    Chosen by `EVIDENCE_BACKEND`, defaulting to the filesystem so the worker still
+    starts on a machine with neither Docker nor a bucket. This used to construct the
+    filesystem store unconditionally, which meant a deployed worker wrote evidence to
+    its own container and lost it on the next deploy however carefully S3 was
+    configured.
     """
-    settings = get_settings()
-    root = getattr(settings.object_storage, "local_root", None) or ".evidence"
-    return FilesystemEvidenceStore(root)
+    return build_evidence_store(get_settings(), local_root=".evidence")
 
 
 @celery_app.task(name="app.workers.tasks.crawl.enqueue_pilot_cycle", bind=True)

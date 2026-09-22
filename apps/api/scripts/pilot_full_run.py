@@ -42,7 +42,7 @@ from app.domains.acquisition.runner import (
     HostGate,
     run_cycle,
 )
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import build_evidence_store
 
 #: The approved configuration for the first full run. Every value is more conservative
 #: than the general default, and `total_timeout_seconds` is 90 rather than 60 because
@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         run_cycle(
             engine,
             cycle_key=args.cycle,
-            store=FilesystemEvidenceStore(args.evidence_root),
+            store=build_evidence_store(get_settings(), local_root=args.evidence_root),
             worker=worker_name,
             fetcher=StaticHttpFetcher(FULL_RUN_POLICY),
             gate=HostGate(min_interval_seconds=HOST_INTERVAL_SECONDS),

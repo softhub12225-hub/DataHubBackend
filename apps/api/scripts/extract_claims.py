@@ -36,7 +36,7 @@ from typing import Any
 from sqlalchemy import Connection, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
-from app.domains.acquisition.storage import FilesystemEvidenceStore
+from app.domains.acquisition.storage import EvidenceStore, build_evidence_store
 from app.domains.claims.language import KNOWN_TESTS
 from app.domains.claims.locator import resolve
 from app.domains.claims.model import ROUTING
@@ -78,8 +78,8 @@ def _engine(role: DatabaseRole) -> Any:
     return create_engine(settings.database.sync_dsn(role), future=True)
 
 
-def _artifacts(root: Path) -> FilesystemEvidenceStore:
-    return FilesystemEvidenceStore(root, prefix=DERIVED_PREFIX)
+def _artifacts(root: Path) -> EvidenceStore:
+    return build_evidence_store(get_settings(), prefix=DERIVED_PREFIX, local_root=root)
 
 
 # ===========================================================================
