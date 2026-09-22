@@ -3,39 +3,56 @@
 The crawler is not a separate codebase. It is `apps/api/scripts/acquisition.py` plus
 the application's models, settings, lease logic and evidence store, and it shares one
 database schema with the API. So it deploys from **this** repository as additional
-services rather than from a copy.
+services rather than from a copy. Two copies of the same Alembic history is how a
+crawler ends up writing rows the API cannot read.
 
-Railway documents the conflict that arises when several services build from one repo:
-they would all inherit `railway.json`'s `startCommand` and every one of them would try
-to start uvicorn. `railway.crawler.json` is the second config, selected per service
-through that service's *Config file path* setting.
+## Where the configuration lives, and why
 
-## Why `railway.crawler.json` omits `startCommand`
+`railway.json` carries **only the build settings** — the Dockerfile and its path —
+because that is the only part every service built from this repo genuinely shares.
+Nothing else is in it.
 
-Deliberately. The three crawler services run three different commands, and one config
-file cannot hold three. What it *does* carry is everything they share:
+That is deliberate, and it took two attempts to get right:
 
-- the same Dockerfile, so all services run the identical image the API runs;
-- `restartPolicyType: NEVER`, because a cron that fails should wait for its next
-  schedule rather than restart-loop against the same failure; and
-- **no `healthcheckPath`** — a cron service exits when it finishes and serves no HTTP,
-  so a healthcheck would fail every run. `railway.json` sets one because the API needs
-  it; inheriting it here would mark every successful crawl as a failed deploy.
+1. The obvious approach is a second config file, `railway.crawler.json`, selected per
+   service. **Railway rejects this**: config-as-code (`railway.json` / `railway.toml`)
+   is deprecated in favour of infrastructure-as-code (`.railway/railway.ts`), and the
+   per-service *config file path* setting is no longer accepted by the API.
 
-Each service then sets its own start command and cron schedule.
+2. Leaving `startCommand` and `healthcheckPath` in `railway.json` does not work
+   either, because a config file at the repo root applies to **every** service built
+   from that repo. The crawler services would inherit the API's start command and each
+   try to run uvicorn on a cron schedule — and a cron service that never exits is
+   worse than one that fails, because Railway then *skips* every subsequent execution.
+   A healthcheck is equally wrong for a cron: the service exits when it finishes and
+   serves no HTTP, so the check would mark every successful crawl as a failed deploy.
 
-## The three services
+So each service holds its own start command, schedule, restart policy and healthcheck
+in its Railway service configuration. The repo holds what they share.
 
-| Service | Start command | Schedule |
-| --- | --- | --- |
-| `crawler-sweep` | `sh -c 'python apps/api/scripts/acquisition.py sweep --quiet'` | `*/15 * * * *` |
-| `crawler-enqueue` | `sh -c 'python apps/api/scripts/acquisition.py enqueue --pilot'` | `0 3 * * *` |
-| `crawler-worker` | `sh -c 'python apps/api/scripts/acquisition.py worker --max-pages 20 --concurrency 4 --i-understand'` | `30 * * * *` |
+When this project migrates to `.railway/railway.ts`, all of it can move there and be
+version-controlled again.
+
+## The services
+
+| Service | Start command | Schedule | Restart |
+| --- | --- | --- | --- |
+| `DataHubBackend` | `sh -c 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'` | — | `ON_FAILURE` ×3 |
+| `crawler-sweep` | `sh -c 'python apps/api/scripts/acquisition.py sweep --quiet'` | `*/15 * * * *` | `NEVER` |
+| `crawler-enqueue` | `sh -c 'python apps/api/scripts/acquisition.py enqueue --pilot'` | `0 3 * * *` | `NEVER` |
+| `crawler-worker` | `sh -c 'python apps/api/scripts/acquisition.py worker --max-pages 20 --concurrency 4 --i-understand'` | `30 * * * *` | `NEVER` |
 
 `sh -c` because a service-level start command is exec'd directly with no shell, which
 is how `${PORT:-8000}` once reached uvicorn as six literal characters.
 
-### Why three and not one
+`python` and the `app` package both resolve without qualification: the runtime image
+sets `PATH="/app/.venv/bin:$PATH"` and `PYTHONPATH="/app/apps/api/src"`, with
+`WORKDIR /app`.
+
+`NEVER` on the crons: a failed run should wait for its next schedule rather than
+restart-loop against the same failure.
+
+### Why three services and not one
 
 **Separation of consequence.** `enqueue` decides *what* will be fetched; `worker` does
 the fetching. Keeping them apart means a mistaken enqueue is not instantly several
@@ -79,16 +96,21 @@ fill a bucket.
 
 ## Variables
 
-Storage is set as **environment-level shared variables**, not per service, because
-three processes touch the same bucket: the worker writes raw snapshots under
-`evidence/`, extraction reads those and writes normalised documents under `derived/`,
-and the API's evidence viewer reads `derived/`. If those disagree the viewer shows
-nothing for snapshots that exist — on the screen a reviewer uses to decide whether a
-figure may be published, and it reads as missing evidence rather than as
+Storage is set as **environment-level shared variables** and referenced per service as
+`${{shared.NAME}}`; the database settings are referenced from the API service as
+`${{DataHubBackend.NAME}}`. Either way each value exists once, so changing it changes
+it everywhere.
+
+That matters because three processes touch the same bucket: the worker writes raw
+snapshots under `evidence/`, extraction reads those and writes normalised documents
+under `derived/`, and the API's evidence viewer reads `derived/`. If those disagree the
+viewer shows nothing for snapshots that exist — on the screen a reviewer uses to decide
+whether a figure may be published, and it reads as missing evidence rather than as
 misconfiguration.
 
-Service-level variables shadow shared ones, so a placeholder left on a service wins
-over the real shared value. Check for that after any change.
+**Service-level variables shadow shared ones.** Two placeholder S3 credentials left on
+the API service silently won over the real shared values until they were deleted.
+Check for that after any change.
 
 `EVIDENCE_BACKEND` belongs in the shared set too: it is what makes the API read S3
 rather than a local directory. Once it is `s3`, `ARTIFACT_ROOT` is unused.
