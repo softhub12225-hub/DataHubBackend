@@ -1,5 +1,34 @@
 # Collecting with a model instead of a crawler
 
+There are two online collection modes. Both stage into `pilot_collected_fact` as
+`NEEDS_REVIEW` for the existing approve/reject path. Neither writes canonical tables.
+
+## ChatGPT-style knowledge (preferred for “ask about a university”)
+
+`apps/api/scripts/ai_knowledge_collect.py` asks OpenAI what it knows about each
+registered institution (same shape as asking ChatGPT), citing the workbook’s official
+URLs so a reviewer can verify. **No page fetch. No local artifacts. Run on Railway.**
+
+```
+# On DataHubBackend (Railway ssh / online API process):
+python apps/api/scripts/ai_knowledge_collect.py preflight
+python apps/api/scripts/ai_knowledge_collect.py run --limit 3
+python apps/api/scripts/ai_knowledge_collect.py run --i-understand-cost
+python apps/api/scripts/ai_knowledge_collect.py report
+```
+
+HTTP (authenticated reviewer with `source:verify`, CSRF header required on POST):
+
+```
+GET  /api/v1/review/operations/ai-knowledge
+POST /api/v1/review/operations/ai-knowledge   {"limit": 3}
+```
+
+`OPENAI_API_KEY` must be set on the **DataHubBackend** service; `OPENAI_MODEL`
+defaults to `gpt-4o-mini`. Rows use sheet name `ai_knowledge`.
+
+## Page-fetch collection (quote-checked)
+
 `apps/api/scripts/ai_collect.py` reads the registered official-source URLs with the
 OpenAI API and stages what the model found. It replaces the crawler for this purpose:
 no cycle, no queue, no lease, no cron, no snapshot — one HTTP GET per page, inside the

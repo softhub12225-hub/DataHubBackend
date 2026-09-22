@@ -86,10 +86,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     store = FilesystemEvidenceStore(artifact_root)
 
-    print(f"artifact root: {artifact_root.resolve()}")
-    print(f"model: {settings.openai.model}")
-    print("offline over stored documents; writing field_claim_candidate only")
-
     report = run_openai_claims(
         engine,
         artifacts=store,

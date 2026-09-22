@@ -21,11 +21,12 @@ calling the same `_evaluate` the apply path calls.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Request, Response, status
-from pydantic import BaseModel, SecretStr
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy import text
 
 from app.api.review.deps import (
@@ -44,6 +45,7 @@ from app.domains.claims import precedence as candidate_precedence
 from app.domains.claims import resolution as candidate_resolution
 from app.domains.extraction.runner import DERIVED_PREFIX
 from app.domains.identity import sessions
+from app.domains.pilot import ai_knowledge as ai_knowledge_collect
 from app.domains.verification import console as console_reads
 from app.domains.verification import decisions as decision_service
 from app.domains.verification import source_body
@@ -52,6 +54,11 @@ from app.domains.verification.promotion import PromotionRefusedError
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/review", tags=["review"])
+
+#: In-process status for the online ChatGPT-style knowledge collect job.
+#: One concurrent run per API process — enough for the pilot; not a distributed lock.
+_ai_knowledge_lock = threading.Lock()
+_ai_knowledge_job: dict[str, Any] = {"status": "idle"}
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +425,122 @@ async def operations(
         }
         for r in rows
     ]
+
+
+class AiKnowledgeRunRequest(BaseModel):
+    """Trigger ChatGPT-style OpenAI knowledge collection on this online backend."""
+
+    limit: int | None = Field(
+        default=3,
+        ge=1,
+        description="Max institutions to query. Omit with acknowledge_cost for a full run.",
+    )
+    acknowledge_cost: bool = Field(
+        default=False,
+        description=f"Required when querying more than {ai_knowledge_collect.COST_GATE} institutions.",
+    )
+
+
+def _run_ai_knowledge_job(*, limit: int | None, acknowledge_cost: bool) -> None:
+    """Runs on the API process after the HTTP response — OpenAI stays on the online backend."""
+    global _ai_knowledge_job
+    engine = ai_knowledge_collect.engine_for()
+    try:
+        with _ai_knowledge_lock:
+            _ai_knowledge_job = {"status": "running", "limit": limit}
+
+        def progress(name: str, kept: int, error: str | None) -> None:
+            with _ai_knowledge_lock:
+                _ai_knowledge_job = {
+                    **_ai_knowledge_job,
+                    "last_institution": name,
+                    "last_facts": kept,
+                    "last_error": error,
+                }
+
+        result = ai_knowledge_collect.run_collection(
+            engine,
+            limit=limit,
+            acknowledged=acknowledge_cost,
+            progress=progress,
+        )
+        with _ai_knowledge_lock:
+            _ai_knowledge_job = {"status": "completed", **result}
+        logger.info(
+            "ai_knowledge_collect_finished",
+            status=result.get("status"),
+            facts=result.get("facts_staged"),
+            submission_id=result.get("submission_id"),
+        )
+    except Exception as exc:
+        with _ai_knowledge_lock:
+            _ai_knowledge_job = {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        logger.exception("ai_knowledge_collect_failed")
+    finally:
+        engine.dispose()
+
+
+@router.get("/operations/ai-knowledge")
+async def ai_knowledge_status(session: SessionDep) -> dict[str, Any]:
+    """Preflight counts plus the in-process job status for online knowledge collection."""
+    del session
+    engine = ai_knowledge_collect.engine_for()
+    try:
+        info = ai_knowledge_collect.preflight(engine)
+        runs = ai_knowledge_collect.report(engine, limit=10)
+    finally:
+        engine.dispose()
+    with _ai_knowledge_lock:
+        job = dict(_ai_knowledge_job)
+    return {"preflight": info, "job": job, "recent_runs": runs}
+
+
+@router.post("/operations/ai-knowledge")
+async def ai_knowledge_start(
+    body: AiKnowledgeRunRequest,
+    background_tasks: BackgroundTasks,
+    session: VerifyingSessionDep,
+    _csrf: CsrfDep,
+) -> dict[str, Any]:
+    """Start ChatGPT-style OpenAI collection on this Railway API process (not local).
+
+    Stages rows in ``pilot_collected_fact`` as ``NEEDS_REVIEW`` for the existing
+    approve/reject path. Does not crawl or read local artifacts.
+    """
+    del session
+    with _ai_knowledge_lock:
+        if _ai_knowledge_job.get("status") == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="an ai_knowledge run is already in progress on this process",
+            )
+    limit = body.limit
+    if limit is None and not body.acknowledge_cost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"full run requires acknowledge_cost=true "
+                f"(more than {ai_knowledge_collect.COST_GATE} paid calls)"
+            ),
+        )
+    background_tasks.add_task(
+        _run_ai_knowledge_job,
+        limit=limit,
+        acknowledge_cost=body.acknowledge_cost,
+    )
+    return {
+        "status": "started",
+        "limit": limit,
+        "acknowledge_cost": body.acknowledge_cost,
+        "sheet_name": ai_knowledge_collect.SHEET_NAME,
+        "message": (
+            "OpenAI knowledge collection is running on this online backend. "
+            "Poll GET /review/operations/ai-knowledge for progress."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
