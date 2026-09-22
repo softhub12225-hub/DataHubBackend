@@ -41,6 +41,7 @@ from app.api.review.deps import (
 )
 from app.core.logging import get_logger
 from app.domains.acquisition.storage import build_evidence_store
+from app.domains.acquisition import online_fill
 from app.domains.claims import precedence as candidate_precedence
 from app.domains.claims import resolution as candidate_resolution
 from app.domains.extraction.runner import DERIVED_PREFIX
@@ -540,6 +541,134 @@ async def ai_knowledge_start(
         "message": (
             "OpenAI knowledge collection is running on this online backend. "
             "Poll GET /review/operations/ai-knowledge for progress."
+        ),
+    }
+
+
+class AcquisitionFillRequest(BaseModel):
+    """Fetch and normalise missing page bodies on this online backend."""
+
+    institution: str | None = Field(
+        default=None,
+        description="Substring match on target_institution.match_key (e.g. 'imperial').",
+    )
+    max_pages: int = Field(
+        default=online_fill.DEFAULT_MAX_PAGES,
+        ge=1,
+        le=100,
+        description="Max pages to contact in this run.",
+    )
+    acknowledge: bool = Field(
+        default=False,
+        description=f"Required when max_pages > {online_fill.HARD_MAX_PAGES}.",
+    )
+
+
+_acquisition_fill_lock = threading.Lock()
+_acquisition_fill_job: dict[str, Any] = {"status": "idle"}
+
+
+def _run_acquisition_fill_job(
+    *, institution: str | None, max_pages: int, acknowledge: bool, registered_by: uuid.UUID
+) -> None:
+    try:
+        with _acquisition_fill_lock:
+            _acquisition_fill_job.clear()
+            _acquisition_fill_job.update(
+                {"status": "running", "institution": institution, "max_pages": max_pages}
+            )
+        result = online_fill.fill_evidence(
+            institution=institution,
+            max_pages=max_pages,
+            acknowledge=acknowledge,
+            registered_by=registered_by,
+        )
+        with _acquisition_fill_lock:
+            _acquisition_fill_job.clear()
+            _acquisition_fill_job.update({"status": "completed", **result})
+        logger.info(
+            "acquisition_fill_finished",
+            institution=result.get("institution"),
+            after=result.get("after"),
+        )
+    except Exception as exc:
+        with _acquisition_fill_lock:
+            _acquisition_fill_job.clear()
+            _acquisition_fill_job.update(
+                {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+            )
+        logger.exception("acquisition_fill_failed")
+
+
+@router.get("/operations/acquisition-fill")
+async def acquisition_fill_status(
+    connection: ConnectionDep, session: SessionDep, institution: str | None = None
+) -> dict[str, Any]:
+    """Gap counts for missing bodies plus the in-process fill job status."""
+    del session
+
+    def _gap(sync_conn: Any) -> dict[str, Any]:
+        institution_id = (
+            online_fill.resolve_institution_id(sync_conn, institution) if institution else None
+        )
+        gap = online_fill.evidence_gap(sync_conn, institution_id=institution_id)
+        name = None
+        if institution_id is not None:
+            name = sync_conn.execute(
+                text("SELECT match_key FROM target_institution WHERE id = :i"),
+                {"i": institution_id},
+            ).scalar_one()
+        return {
+            "institution": name,
+            "institution_id": str(institution_id) if institution_id else None,
+            **gap,
+        }
+
+    gap = await run_sync(connection, _gap)
+    with _acquisition_fill_lock:
+        job = dict(_acquisition_fill_job)
+    return {"gap": gap, "job": job}
+
+
+@router.post("/operations/acquisition-fill")
+async def acquisition_fill_start(
+    body: AcquisitionFillRequest,
+    background_tasks: BackgroundTasks,
+    session: VerifyingSessionDep,
+    _csrf: CsrfDep,
+) -> dict[str, Any]:
+    """Register, enqueue, fetch, and extract page bodies on this Railway API process.
+
+    Clears BODY_EVIDENCE_NOT_AVAILABLE for URLs that successfully snapshot + extract.
+    Contacts real university sites; bounded by max_pages.
+    """
+    with _acquisition_fill_lock:
+        if _acquisition_fill_job.get("status") == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="an acquisition-fill run is already in progress on this process",
+            )
+    if body.max_pages > online_fill.HARD_MAX_PAGES and not body.acknowledge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"max_pages > {online_fill.HARD_MAX_PAGES} requires acknowledge=true"
+            ),
+        )
+    background_tasks.add_task(
+        _run_acquisition_fill_job,
+        institution=body.institution,
+        max_pages=body.max_pages,
+        acknowledge=body.acknowledge,
+        registered_by=session.user_id,
+    )
+    return {
+        "status": "started",
+        "institution": body.institution,
+        "max_pages": body.max_pages,
+        "message": (
+            "Acquisition fill is running on this online backend. "
+            "Poll GET /review/operations/acquisition-fill for progress."
         ),
     }
 
