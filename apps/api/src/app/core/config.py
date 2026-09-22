@@ -8,8 +8,10 @@ Redis or MinIO running.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -40,6 +42,24 @@ class Environment(StrEnum):
 PLACEHOLDER_SECRETS = frozenset(
     {"", "change-me", "changeme", "postgres", "password", "secret", "minioadmin"}
 )
+
+# Repo-root ``.env`` (``datahub/.env``) when scripts run from ``apps/api``.
+_REPO_ENV_FILE = Path(__file__).resolve().parents[5] / ".env"
+
+
+def _load_repo_dotenv() -> None:
+    """Load repo-root ``.env`` into ``os.environ`` (does not override existing vars)."""
+    path = _REPO_ENV_FILE
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
 
 
 class DatabaseRole(StrEnum):
@@ -371,7 +391,7 @@ class ObjectStorageSettings(BaseSettings):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env",),
+        env_file=(str(_REPO_ENV_FILE), ".env"),
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",
@@ -529,4 +549,5 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Process-wide settings, read from the environment exactly once."""
+    _load_repo_dotenv()
     return Settings()

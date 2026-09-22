@@ -142,7 +142,12 @@ DEACTIVATING = frozenset({"REJECTED", "REVOKED"})
 
 
 def _engine(role: DatabaseRole = DatabaseRole.API) -> Engine:
-    return create_engine(get_settings().database.sync_dsn(role), future=True)
+    settings = get_settings()
+    return create_engine(
+        settings.database.sync_dsn(role),
+        future=True,
+        connect_args={"connect_timeout": int(settings.database.pool_timeout_seconds)},
+    )
 
 
 def _require_configured(role: DatabaseRole) -> None:
