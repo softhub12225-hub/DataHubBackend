@@ -87,6 +87,12 @@ found. `run` refuses more than 20 pages without `--i-understand-cost`, mirroring
 acquisition worker's `--i-understand`. Sample with `--limit` first and read the
 unquoted share before paying for all 319.
 
+Three consecutive model failures end the run, with a non-zero exit code and a count of
+the pages never attempted. An exhausted balance, an expired key or an outage fails
+every call identically; without the guard the run keeps fetching university pages it
+can do nothing with, at their expense. The first sample run hit exactly this —
+`insufficient_quota` — and fetched five pages for nothing before the guard existed.
+
 ## What still has to happen afterwards
 
 Everything that decides truth. A reviewer reads the staged rows against the pages,

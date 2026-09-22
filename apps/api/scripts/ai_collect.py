@@ -124,6 +124,12 @@ SHEET_NAME = "ai_collect"
 #: call plus one HTTP request, spent whether or not anything is found.
 COST_GATE = 20
 
+#: Consecutive model failures that end the run. An exhausted balance, an expired key or
+#: an outage fails every call the same way, and without this the run keeps fetching
+#: university pages it can do nothing with -- which costs them bandwidth and earns us a
+#: reputation as a badly behaved client.
+CONSECUTIVE_FAILURE_LIMIT = 3
+
 #: How the extractor's field kinds land in the workbook's fact vocabulary. `fact_type`
 #: is held to `PILOT_FACT_TYPES` by a CHECK, so this mapping is the whole of what may
 #: be written.
@@ -149,6 +155,24 @@ ABSTENTION_REMIT: dict[str, str] = {
 }
 
 
+#: The submission whose pages a run reads: the most recent official-source list.
+#:
+#: Not "every `pilot_collected_source` row". Each run copies the pages it read into its
+#: own submission, so an unqualified query returns this run's corpus *plus every
+#: previous run's copy of it* -- the page set doubling each time, and the copies
+#: colliding on `source_ref` before the first page is even fetched. That is not
+#: hypothetical; it is what the second run did.
+#:
+#: Naming one submission rather than filtering by kind also keeps `source_ref`
+#: unambiguous: refs are workbook-local, so two lists may both use `S0001` for
+#: different pages, and a corpus drawn from several of them could not be copied into
+#: one submission at all.
+_LATEST_SOURCE_LIST = text(
+    "SELECT id FROM pilot_submission "
+    " WHERE submission_kind = 'OFFICIAL_SOURCE_LIST' "
+    " ORDER BY imported_at DESC, id LIMIT 1"
+)
+
 #: Written out twice rather than concatenated: a query assembled from fragments is a
 #: query nobody greps for, and the only difference between these two is the LIMIT.
 _PHYSICAL_SOURCES = text(
@@ -156,7 +180,7 @@ _PHYSICAL_SOURCES = text(
     "       degree_scope, workbook_column, official_url, normalized_url, "
     "       url_sha256, host, is_third_party "
     "  FROM pilot_collected_source "
-    " WHERE duplicate_of_source_ref IS NULL "
+    " WHERE submission_id = :submission AND duplicate_of_source_ref IS NULL "
     " ORDER BY source_ref"
 )
 _PHYSICAL_SOURCES_LIMITED = text(
@@ -164,7 +188,7 @@ _PHYSICAL_SOURCES_LIMITED = text(
     "       degree_scope, workbook_column, official_url, normalized_url, "
     "       url_sha256, host, is_third_party "
     "  FROM pilot_collected_source "
-    " WHERE duplicate_of_source_ref IS NULL "
+    " WHERE submission_id = :submission AND duplicate_of_source_ref IS NULL "
     " ORDER BY source_ref LIMIT :limit"
 )
 
@@ -184,16 +208,21 @@ def _engine(role: DatabaseRole) -> Engine:
 
 
 def _physical_sources(connection: Connection, limit: int | None) -> list[dict[str, Any]]:
-    """The pages to read: one row per distinct URL, not one per claimed responsibility.
+    """The pages to read: one row per distinct URL, from the client's source list.
 
-    `duplicate_of_source_ref IS NULL` is what draws that line. The schema keeps a
+    `duplicate_of_source_ref IS NULL` draws the second line. The schema keeps a
     repeated URL as a separate responsibility claim on purpose, and only the physical
     rows are meant to be fetched.
     """
+    source_list = connection.execute(_LATEST_SOURCE_LIST).scalar_one_or_none()
+    if source_list is None:
+        return []
     if limit is None:
-        rows = connection.execute(_PHYSICAL_SOURCES).all()
+        rows = connection.execute(_PHYSICAL_SOURCES, {"submission": source_list}).all()
     else:
-        rows = connection.execute(_PHYSICAL_SOURCES_LIMITED, {"limit": limit}).all()
+        rows = connection.execute(
+            _PHYSICAL_SOURCES_LIMITED, {"submission": source_list, "limit": limit}
+        ).all()
     return [dict(row._mapping) for row in rows]
 
 
@@ -349,7 +378,12 @@ def _preflight(engine: Engine) -> int:
     with engine.connect() as connection:
         sources = _physical_sources(connection, None)
         registered = connection.execute(
-            text("SELECT count(*) FROM pilot_collected_source")
+            text(
+                "SELECT count(*) FROM pilot_collected_source "
+                " WHERE submission_id = (SELECT id FROM pilot_submission "
+                "   WHERE submission_kind = 'OFFICIAL_SOURCE_LIST' "
+                "   ORDER BY imported_at DESC, id LIMIT 1)"
+            )
         ).scalar_one()
         staged = connection.execute(
             text("SELECT count(*) FROM pilot_collected_fact WHERE sheet_name = :s"),
@@ -406,8 +440,12 @@ def _run(engine: Engine, *, limit: int | None, acknowledged: bool) -> int:
     staged = not_published = rejected = 0
     out_of_remit = unreachable = not_html = model_failed = 0
     total_bytes = 0
+    consecutive_failures = 0
+    attempted = 0
+    abandoned = False
 
     for source in sources:
+        attempted += 1
         url = str(source["official_url"])
         try:
             payload, content_type, effective = _fetch(
@@ -434,8 +472,22 @@ def _run(engine: Engine, *, limit: int | None, acknowledged: bool) -> int:
             # page that was read and states nothing.
             print(f"  {source['source_ref']} {url}: {exc}")
             model_failed += 1
+            consecutive_failures += 1
+            if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                # An expired key, an exhausted balance or an outage fails every call
+                # identically, and the run would keep requesting university pages for
+                # nothing -- three hundred of them, at their expense and ours. Three in
+                # a row is a broken configuration, not three unlucky pages.
+                print(
+                    f"\nstopping: {consecutive_failures} model calls failed in a row. "
+                    "The pages are being fetched fine; the model is not answering.",
+                    file=sys.stderr,
+                )
+                abandoned = True
+                break
             continue
 
+        consecutive_failures = 0
         rejected += outcome.rejected_unquoted
         kept = 0
         with engine.begin() as connection:
@@ -503,6 +555,10 @@ def _run(engine: Engine, *, limit: int | None, acknowledged: bool) -> int:
     print(f"pages not retrieved      {unreachable}")
     print(f"pages that were not HTML {not_html}")
     print(f"pages the model failed   {model_failed}")
+    if abandoned:
+        # Said plainly, and reflected in the exit code: a partial run reported as a
+        # successful one is how a shrinking corpus goes unnoticed.
+        print(f"pages never attempted    {len(sources) - attempted}")
     print()
     if rejected:
         # The number worth watching over time. A model that reads returns quotes that
@@ -510,11 +566,19 @@ def _run(engine: Engine, *, limit: int | None, acknowledged: bool) -> int:
         # drifting toward invention, and it shows up here before a reviewer sees it.
         share = rejected / max(1, rejected + staged)
         print(f"NOTE: {share:.0%} of the model's claims were not found in their page.")
-    print(
-        f"Staged as submission {submission_id}. Every row is NEEDS_REVIEW with no "
-        "snapshot behind it. No field_claim, no proposal, nothing publication eligible."
-    )
-    return 0
+    if staged:
+        print(
+            f"Staged as submission {submission_id}. Every row is NEEDS_REVIEW with no "
+            "snapshot behind it. No field_claim, no proposal, nothing publication "
+            "eligible."
+        )
+    else:
+        # Saying "staged as submission X" over an empty submission is how a run that
+        # produced nothing gets remembered as a run that worked.
+        print(f"Nothing was staged. Submission {submission_id} records the attempt.")
+    # A run that gave up is not a run that finished, and a caller reading exit codes
+    # has to be able to tell.
+    return 1 if abandoned else 0
 
 
 def _report(engine: Engine) -> int:

@@ -70,6 +70,61 @@ def staged(conn: Connection) -> Any:
     return module, submission_id, source
 
 
+def _official_source_list(conn: Connection, target: uuid.UUID, refs: list[str]) -> uuid.UUID:
+    """The client's list: the submission whose pages a run is supposed to read."""
+    submission_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO pilot_submission (id, file_sha256, original_filename, "
+            "  file_byte_size, template_version, submission_kind, defines_pilot_scope, "
+            "  selected_university_count, import_status) "
+            "VALUES (:id, :sha, 'sources.xlsx', 1, 'v1', 'OFFICIAL_SOURCE_LIST', true, "
+            "  1, 'VALIDATED')"
+        ),
+        {"id": submission_id, "sha": f"{uuid.uuid4().hex}{uuid.uuid4().hex}"},
+    )
+    for ref in refs:
+        source = _source(target, ref=ref)
+        conn.execute(
+            text(
+                "INSERT INTO pilot_collected_source (submission_id, source_ref, "
+                "  target_institution_id, sheet_row_no, source_type, official_url, "
+                "  normalized_url, url_sha256, host) "
+                "VALUES (:submission, :ref, :target, 2, :type, :url, :url, :sha, :host)"
+            ),
+            {
+                "submission": submission_id,
+                "ref": ref,
+                "target": target,
+                "type": source["source_type"],
+                "url": source["official_url"],
+                "sha": source["url_sha256"],
+                "host": source["host"],
+            },
+        )
+    return submission_id
+
+
+def test_a_second_run_reads_the_same_pages_and_not_its_own_copies(conn: Connection) -> None:
+    """The bug the first real run hit, before any page was fetched.
+
+    Each run copies the pages it read into its own submission. A corpus query that did
+    not name the client's source list therefore returned those copies as well, so the
+    page set doubled every run and the copies collided on `source_ref` immediately.
+    """
+    module = _module()
+    target = make_candidates(conn, 1)[0]
+    _official_source_list(conn, target, ["S0001", "S0002"])
+
+    first = module._physical_sources(conn, None)
+    assert [source["source_ref"] for source in first] == ["S0001", "S0002"]
+
+    module._open_submission(conn, model="test-model", sources=first)
+
+    second = module._physical_sources(conn, None)
+    assert [source["source_ref"] for source in second] == ["S0001", "S0002"]
+
+
 def test_a_run_opens_a_collection_workbook_that_does_not_define_scope(
     conn: Connection, staged: Any
 ) -> None:
