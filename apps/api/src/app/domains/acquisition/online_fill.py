@@ -46,14 +46,14 @@ def api_engine() -> Engine:
 
 
 def resolve_institution_id(connection: Connection, institution: str) -> uuid.UUID | None:
-    """Match by match_key / display name substring (case-insensitive)."""
+    """Match by match_key substring (case-insensitive)."""
     needle = institution.strip().lower()
     if not needle:
         return None
     row = connection.execute(
         text(
             "SELECT id FROM target_institution "
-            " WHERE lower(match_key) LIKE :q OR lower(coalesce(display_name, '')) LIKE :q "
+            " WHERE lower(match_key) LIKE :q "
             " ORDER BY match_key LIMIT 1"
         ),
         {"q": f"%{needle}%"},

@@ -606,28 +606,36 @@ async def acquisition_fill_status(
 ) -> dict[str, Any]:
     """Gap counts for missing bodies plus the in-process fill job status."""
     del session
+    gap: dict[str, Any] | None = None
+    gap_error: str | None = None
+    try:
 
-    def _gap(sync_conn: Any) -> dict[str, Any]:
-        institution_id = (
-            online_fill.resolve_institution_id(sync_conn, institution) if institution else None
-        )
-        gap = online_fill.evidence_gap(sync_conn, institution_id=institution_id)
-        name = None
-        if institution_id is not None:
-            name = sync_conn.execute(
-                text("SELECT match_key FROM target_institution WHERE id = :i"),
-                {"i": institution_id},
-            ).scalar_one()
-        return {
-            "institution": name,
-            "institution_id": str(institution_id) if institution_id else None,
-            **gap,
-        }
+        def _gap(sync_conn: Any) -> dict[str, Any]:
+            institution_id = (
+                online_fill.resolve_institution_id(sync_conn, institution)
+                if institution
+                else None
+            )
+            counts = online_fill.evidence_gap(sync_conn, institution_id=institution_id)
+            name = None
+            if institution_id is not None:
+                name = sync_conn.execute(
+                    text("SELECT match_key FROM target_institution WHERE id = :i"),
+                    {"i": institution_id},
+                ).scalar_one()
+            return {
+                "institution": name,
+                "institution_id": str(institution_id) if institution_id else None,
+                **counts,
+            }
 
-    gap = await run_sync(connection, _gap)
+        gap = await run_sync(connection, _gap)
+    except Exception as exc:
+        gap_error = f"{type(exc).__name__}: {exc}"
+        logger.exception("acquisition_fill_status_gap_failed")
     with _acquisition_fill_lock:
         job = dict(_acquisition_fill_job)
-    return {"gap": gap, "job": job}
+    return {"gap": gap, "gap_error": gap_error, "job": job}
 
 
 @router.post("/operations/acquisition-fill")
