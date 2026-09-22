@@ -279,6 +279,37 @@ class DatabaseSettings(BaseSettings):
         return self
 
 
+class OpenAISettings(BaseSettings):
+    """The language-model extractor's credentials and model choice.
+
+    WHAT THIS IS FOR, AND WHAT IT IS NOT
+    ====================================
+    An extractor, reading documents this system already stores, producing
+    `field_claim_candidate` rows like every other extractor. It is not a way to ask a
+    model what a university charges: the model never sees a URL and never browses, and
+    a claim it cannot quote from the supplied document is discarded before it reaches
+    the database. See `domains/claims/llm.py` for why that check is the whole design.
+
+    `base_url` is settable so an OpenAI-compatible endpoint can be used instead. It is
+    not a default: pointing model traffic somewhere should be a deliberate act.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OPENAI_", extra="ignore")
+
+    api_key: SecretStr = SecretStr("change-me")
+    #: Pinned, not "latest". An extractor's output has to be reproducible enough that
+    #: `extractor_version` means something, and a floating alias silently changes what
+    #: produced a stored candidate.
+    model: str = "gpt-4o-mini"
+    base_url: str | None = None
+    #: Zero, because this is extraction rather than composition. Two runs over one
+    #: document should not disagree about what the document says.
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    request_timeout_seconds: float = Field(default=60.0, gt=0)
+    #: A ceiling per document, so one pathological page cannot spend the budget.
+    max_output_tokens: int = Field(default=4096, gt=0)
+
+
 class RedisSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="REDIS_", extra="ignore")
 
@@ -411,6 +442,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
     object_storage: ObjectStorageSettings = Field(default_factory=ObjectStorageSettings)
+    openai: OpenAISettings = Field(default_factory=OpenAISettings)
 
     @property
     def session_cookie_secure(self) -> bool:

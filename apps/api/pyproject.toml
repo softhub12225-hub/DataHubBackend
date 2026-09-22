@@ -52,6 +52,10 @@ dependencies = [
     #
     # Found by deploying the one crawler command that sends no HTTP requests.
     "httpx>=0.28.1,<0.29",
+    # The language-model field extractor (`domains/claims/llm.py`). A runtime
+    # dependency of the extraction phase, not of the API: nothing on a request path
+    # imports it, but the extraction scripts run from this same image.
+    "openai>=1.59.0,<2",
 ]
 
 [build-system]
