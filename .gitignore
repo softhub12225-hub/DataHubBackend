@@ -63,3 +63,4 @@ Thumbs.db
 # ignore rule above is about size and churn, and 1.3MB of approved review packages is
 # neither.
 !**/.reports/step-5c5/
+node_modules

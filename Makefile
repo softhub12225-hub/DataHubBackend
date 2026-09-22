@@ -43,6 +43,7 @@ UV      := uv
         claims-readiness claims-sources claims-review-list claims-review-show \
         claims-review-accept claims-review-reject claims-review-context \
         claims-review-scope claims-review-untouched \
+        claims-openai pilot-all-universities \
         privilege-gate runtime-roles-reset runtime-roles-verify claims-low \
         verify-packet verify-domains verify-redirects verify-responsibilities \
         verify-authority verify-scopes verify-untouched verify-manifest \
@@ -214,6 +215,14 @@ claims-review-untouched: ## Prove nothing publishable or canonical moved
 
 claims-run: ## Extract candidate field claims from stored documents (offline)
 	cd apps/api && PYTHONIOENCODING=utf-8 $(UV) run python scripts/extract_claims.py run
+
+claims-openai: ## OpenAI candidate extraction for pilot fleet (needs OPENAI_API_KEY)
+	cd apps/api && PYTHONIOENCODING=utf-8 $(UV) run python scripts/extract_claims_openai.py run
+
+pilot-all-universities: ## Full pilot pipeline: make pilot-all-universities cmd=all i-understand=1
+	cd apps/api && PYTHONIOENCODING=utf-8 $(UV) run python scripts/run_all_universities.py $(cmd) \
+	  $(if $(i-understand),--i-understand,) $(if $(max-pages),--max-pages $(max-pages),) \
+	  $(if $(limit),--limit $(limit),) $(if $(dry),--dry-run,)
 
 claims-coverage: ## Claim coverage by responsibility, institution and gap kind
 	cd apps/api && PYTHONIOENCODING=utf-8 $(UV) run python scripts/extract_claims.py coverage

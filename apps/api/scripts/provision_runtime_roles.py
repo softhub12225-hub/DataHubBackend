@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from psycopg import sql as pg_sql
 from sqlalchemy import create_engine, text
@@ -66,6 +67,20 @@ DEFINER_ATTRIBUTES = (
 )
 
 
+def _load_repo_dotenv() -> None:
+    path = Path(__file__).resolve().parents[3] / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+
+
 def owner_dsn() -> str:
     """The owning/migration connection, from the environment.
 
@@ -81,7 +96,9 @@ def owner_dsn() -> str:
     password = os.environ.get("POSTGRES_MIGRATION_PASSWORD") or os.environ.get("POSTGRES_PASSWORD")
     if not user or not password:
         raise SystemExit("POSTGRES_MIGRATION_USER/PASSWORD (or POSTGRES_USER/PASSWORD) must be set")
-    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}"
+    sslmode = os.environ.get("POSTGRES_SSLMODE", "").strip()
+    query = f"?sslmode={sslmode}" if sslmode else ""
+    return f"postgresql+psycopg://{user}:{password}@{host}:{port}/{database}{query}"
 
 
 def provision(
@@ -110,6 +127,12 @@ def provision(
 
     with engine.begin() as connection:
         driver = connection.connection.driver_connection
+        is_superuser = bool(
+            connection.execute(
+                text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+            ).scalar()
+        )
+        role_attrs = ROLE_ATTRIBUTES if is_superuser else ""
         for role in selected:
             # Idempotent, and composed rather than formatted: `CREATE ROLE` takes an
             # identifier and `rolname = ...` takes a literal, and psycopg.sql is the
@@ -123,7 +146,7 @@ def provision(
             ).format(name=pg_sql.Literal(role), role=pg_sql.Identifier(role))
             connection.exec_driver_sql(create.as_string(driver))
             statement = pg_sql.SQL(
-                "ALTER ROLE {role} WITH PASSWORD {secret} " + ROLE_ATTRIBUTES
+                "ALTER ROLE {role} WITH PASSWORD {secret} " + role_attrs
             ).format(role=pg_sql.Identifier(role), secret=pg_sql.Literal(passwords[role]))
             connection.exec_driver_sql(statement.as_string(driver))
 
@@ -151,9 +174,17 @@ def ensure_definer_role(engine: Engine) -> None:
 
     No password is set and any existing one is cleared. A definer role with a password is
     an account, and this is deliberately not an account.
+
+    On managed hosts without superuser (e.g. Neon), attribute ALTERs that require
+    CREATEROLE/superuser are skipped after create-if-absent.
     """
     with engine.begin() as connection:
         driver = connection.connection.driver_connection
+        is_superuser = bool(
+            connection.execute(
+                text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+            ).scalar()
+        )
         create = pg_sql.SQL(
             "DO $$ BEGIN "
             "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {name}) THEN "
@@ -162,12 +193,13 @@ def ensure_definer_role(engine: Engine) -> None:
             "END $$;"
         ).format(name=pg_sql.Literal(DEFINER_ROLE), role=pg_sql.Identifier(DEFINER_ROLE))
         connection.exec_driver_sql(create.as_string(driver))
-        for template in (
-            "ALTER ROLE {role} " + DEFINER_ATTRIBUTES,
-            "ALTER ROLE {role} PASSWORD NULL",
-        ):
-            statement = pg_sql.SQL(template).format(role=pg_sql.Identifier(DEFINER_ROLE))
-            connection.exec_driver_sql(statement.as_string(driver))
+        if is_superuser:
+            for template in (
+                "ALTER ROLE {role} " + DEFINER_ATTRIBUTES,
+                "ALTER ROLE {role} PASSWORD NULL",
+            ):
+                statement = pg_sql.SQL(template).format(role=pg_sql.Identifier(DEFINER_ROLE))
+                connection.exec_driver_sql(statement.as_string(driver))
 
 
 def definer_is_safe(engine: Engine) -> tuple[bool, str]:
@@ -249,6 +281,7 @@ def authenticates(dsn: str, role: str, password: str) -> tuple[bool, str]:
 
 
 def main() -> int:
+    _load_repo_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--verify-only",
