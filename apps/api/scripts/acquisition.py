@@ -41,7 +41,7 @@ from app.domains.acquisition.reporting import (
     health_by_institution,
     verification_assistance,
 )
-from app.domains.acquisition.runner import run_cycle
+from app.domains.acquisition.runner import run_cycle, sweep_and_report
 from app.domains.acquisition.storage import build_evidence_store
 from app.workers.tasks.crawl import cycle_key_for
 
@@ -86,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--i-understand",
         action="store_true",
         help="required for more than 20 pages: this contacts real university websites",
+    )
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="reclaim attempts whose worker stopped heartbeating (SAFE, no HTTP)",
+    )
+    sweep.add_argument(
+        "--quiet",
+        action="store_true",
+        help="print nothing when there was nothing to reclaim (for a scheduled run)",
     )
 
     report = sub.add_parser("report", help="acquisition state")
@@ -139,6 +149,9 @@ DEFAULT_ROLES: dict[str, DatabaseRole] = {
     "register": DatabaseRole.API,  # writes `source`, which is onboarding-side work
     "enqueue": DatabaseRole.WORKER,  # writes `fetch_attempt`
     "worker": DatabaseRole.WORKER,  # writes runs, snapshots and blobs
+    # Writes `fetch_attempt` and a terminal `fetch_run`, which is the fetch plane
+    # correcting its own record rather than an operator acting on a source.
+    "sweep": DatabaseRole.WORKER,
     "report": DatabaseRole.API,  # read-only
     "assist": DatabaseRole.API,  # read-only
     "plan": DatabaseRole.API,  # read-only, and sends no HTTP request
@@ -454,6 +467,31 @@ def _dispatch(args: argparse.Namespace, engine: Engine) -> int:
             "\nEvidence captured. No field_claim, extraction or change proposal was "
             "created, and nothing became publication eligible."
         )
+        return 0
+
+    if args.command == "sweep":
+        # WHY THIS COMMAND HAS TO EXIST
+        # =============================
+        # `lease.sweep_expired` was reachable only as a Celery task, and the worker
+        # never called it. That made a scheduled deployment unsafe in a way that shows
+        # up as missing data rather than as an error: a container killed mid-fetch --
+        # OOM, a redeploy, a cron timeout -- leaves its attempts in RUNNING with an
+        # expired lease, and nothing ever reclaims them. Those pages then fall out of
+        # every future cycle silently, because enqueueing is idempotent per cycle and
+        # an attempt that already exists is not re-queued.
+        #
+        # Sweeping turns each one into an ABANDONED attempt and a terminal `fetch_run`,
+        # so the crash becomes a queryable fact and the page is eligible again.
+        #
+        # Sends no HTTP request and touches no third party: it is a database
+        # correction, which is why it is safe to run on a short schedule.
+        reclaimed = sweep_and_report(engine)
+        if reclaimed:
+            print(f"reclaimed {len(reclaimed)} abandoned attempt(s):")
+            for attempt_id in reclaimed:
+                print(f"  {attempt_id}")
+        elif not args.quiet:
+            print("nothing to reclaim; no attempt has outlived its lease.")
         return 0
 
     if args.command == "report":
