@@ -16,7 +16,7 @@ from sqlalchemy import Connection, Engine, create_engine, text
 
 from app.core.config import DatabaseRole, get_settings
 from app.core.logging import get_logger
-from app.domains.acquisition.lease import enqueue_cycle, oldest_open_cycle
+from app.domains.acquisition.lease import enqueue_cycle
 from app.domains.acquisition.registration import register_acquisition_targets
 from app.domains.acquisition.runner import run_cycle
 from app.domains.acquisition.storage import build_evidence_store
@@ -167,15 +167,13 @@ def fill_evidence(
             }
         )
 
-        # Prefer the cycle we just wrote; fall back to any open work.
-        with worker.connect() as connection:
-            open_cycle = oldest_open_cycle(connection) or cycle
-
+        # Fetch THIS cycle. Preferring oldest_open_cycle here previously drained
+        # leftover McGill/Sydney work while Imperial sat queued and untouched.
         store = build_evidence_store(settings, local_root=".evidence")
         fetch_report = asyncio.run(
             run_cycle(
                 worker,
-                cycle_key=open_cycle,
+                cycle_key=cycle,
                 store=store,
                 worker=f"api-online:{uuid.uuid4().hex[:8]}",
                 max_pages=max_pages,
@@ -217,7 +215,7 @@ def fill_evidence(
             after = evidence_gap(connection, institution_id=institution_id)
 
         return {
-            "status": "ok",
+            "status": "completed",
             "institution": name,
             "institution_id": str(institution_id) if institution_id else None,
             "max_pages": max_pages,
